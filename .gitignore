@@ -1,0 +1,12 @@
+node_modules/
+.next/
+.env
+.env.local
+.env*.local
+.DS_Store
+*.log
+__pycache__/
+*.pyc
+
+# Never commit a local copy of .mcp.json with credentials
+.mcp.json

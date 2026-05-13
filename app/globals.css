@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html, body {
+    @apply bg-bg-base text-slate-100 antialiased;
+    font-feature-settings: "ss01", "cv11";
+  }
+
+  *:focus-visible {
+    @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-bg-base;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #1f2940;
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #2a365a;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-bg-card border border-bg-border rounded-xl;
+  }
+
+  .card-hover {
+    @apply hover:bg-bg-hover hover:border-bg-border/80 transition-colors;
+  }
+
+  .btn {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm
+           transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed
+           disabled:hover:bg-bg-card;
+  }
+
+  .btn-primary {
+    @apply btn bg-accent hover:bg-accent-glow text-white
+           shadow-[0_0_20px_-4px_rgba(59,130,246,0.5)]
+           hover:shadow-[0_0_24px_-2px_rgba(96,165,250,0.6)];
+  }
+
+  .btn-secondary {
+    @apply btn bg-bg-hover hover:bg-bg-border text-slate-200 border border-bg-border;
+  }
+
+  .btn-ghost {
+    @apply btn hover:bg-bg-hover text-slate-300;
+  }
+
+  .btn-success {
+    @apply btn bg-emerald-600 hover:bg-emerald-500 text-white
+           shadow-[0_0_20px_-4px_rgba(16,185,129,0.5)];
+  }
+
+  .input {
+    @apply w-full px-3 py-2 bg-bg-panel border border-bg-border rounded-lg
+           text-sm text-slate-100 placeholder:text-slate-500
+           focus:border-accent focus:ring-1 focus:ring-accent
+           transition-colors;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium;
+  }
+
+  .skeleton {
+    @apply bg-gradient-to-r from-bg-card via-bg-hover to-bg-card bg-[length:200%_100%]
+           animate-shimmer rounded;
+  }
+
+  .glass {
+    @apply bg-bg-card/80 backdrop-blur-xl border border-bg-border/60;
+  }
+}
