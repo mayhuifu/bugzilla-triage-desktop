@@ -10,7 +10,7 @@ import { TicketDetailHeader } from "@/components/detail/TicketDetailHeader";
 import { TicketDescription } from "@/components/detail/TicketDescription";
 import { TicketComments } from "@/components/detail/TicketComments";
 import { TicketTimeline } from "@/components/detail/TicketTimeline";
-import { TriagePanel } from "@/components/triage/TriagePanel";
+import { TriageChatPanel } from "@/components/triage/TriageChatPanel";
 
 export default function TicketDetailPage() {
   const params = useParams<{ id: string }>();
@@ -85,9 +85,14 @@ export default function TicketDetailPage() {
               <TicketTimeline history={ticket.history} />
             </div>
 
-            {/* Right: sticky AI triage panel */}
-            <aside className="xl:sticky xl:top-20 xl:self-start xl:max-h-[calc(100vh-6rem)] xl:overflow-y-auto xl:pr-1">
-              <TriagePanel ticketId={ticket.id} ticketStatus={ticket.status} autotriage={autotriage} />
+            {/* Right: sticky AI triage chat panel */}
+            <aside className="xl:sticky xl:top-20 xl:self-start xl:h-[calc(100vh-6rem)]">
+              <TriageChatPanel
+                ticketId={ticket.id}
+                ticketStatus={ticket.status}
+                ticketSummary={ticket.summary}
+                autotriage={autotriage}
+              />
             </aside>
           </div>
         )}
