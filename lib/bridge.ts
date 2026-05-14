@@ -122,7 +122,10 @@ export async function runBridge<T = unknown>(opts: RunOptions): Promise<T> {
 
 // ─── Convenience wrappers ─────────────────────────────────────────
 
-import type { TicketSummary, TicketDetail, TriageResult, SubmissionReceipt, TicketStatus } from "./types";
+import type {
+  TicketSummary, TicketDetail, TriageResult, SubmissionReceipt, TicketStatus,
+  ProductInfo, WhoAmI, DashboardStats,
+} from "./types";
 
 export async function bridgeSearch(opts: {
   product?: string; component?: string; status?: string;
@@ -189,6 +192,25 @@ export async function bridgeTriage(
     stdin: JSON.stringify({ ticket }),
     timeoutMs: opts.timeoutMs || 240_000,
   });
+}
+
+export async function bridgeProducts(): Promise<{ products: ProductInfo[] }> {
+  return runBridge({ script: "bz_bridge", args: ["products"], timeoutMs: 30_000 });
+}
+
+export async function bridgeWhoami(): Promise<WhoAmI> {
+  return runBridge({ script: "bz_bridge", args: ["whoami"], timeoutMs: 15_000 });
+}
+
+export async function bridgeStats(opts: {
+  product?: string; component?: string; assignee?: string;
+}): Promise<DashboardStats> {
+  const args = ["stats"];
+  if (opts.product) args.push("--product", opts.product);
+  if (opts.component) args.push("--component", opts.component);
+  if (opts.assignee) args.push("--assignee", opts.assignee);
+  // 14 parallel Bugzilla queries; allow generous headroom for slow VPN.
+  return runBridge({ script: "bz_bridge", args, timeoutMs: 60_000 });
 }
 
 // ─── Config probe ─────────────────────────────────────────────────

@@ -356,6 +356,174 @@ def cmd_attachments(args) -> dict:
     return {"attachments": out}
 
 
+# ── Sub-command: products (drive the product/component dropdowns) ───────────
+def cmd_products(args) -> dict:
+    """Return accessible products with their components for the filter UI.
+    One round-trip; uses include_fields to keep the payload small."""
+    params = {
+        "api_key": API_KEY,
+        "type": "accessible",
+        "include_fields": "name,is_active,components.name,components.is_active",
+    }
+    r = requests.get(f"{BUGZILLA_URL}/rest/product",
+                     params=params, verify=VERIFY, timeout=30)
+    r.raise_for_status()
+    raw = r.json().get("products", [])
+    products = []
+    for p in raw:
+        if not p.get("is_active", True):
+            continue
+        comps = sorted(
+            [c["name"] for c in p.get("components", []) if c.get("is_active", True)]
+        )
+        products.append({"name": p["name"], "components": comps})
+    products.sort(key=lambda x: x["name"])
+    return {"products": products}
+
+
+# ── Sub-command: whoami (used by the "My Tickets" toggle) ────────────────────
+def cmd_whoami(args) -> dict:
+    """Identify the current API key holder. Falls back to BUGZILLA_LOGIN if
+    /rest/whoami is unavailable (older Bugzilla deployments)."""
+    fallback = os.environ.get("BUGZILLA_LOGIN", "")
+    try:
+        r = requests.get(f"{BUGZILLA_URL}/rest/whoami",
+                         params={"api_key": API_KEY},
+                         verify=VERIFY, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        return {
+            "login": data.get("name") or fallback,
+            "realName": data.get("real_name") or "",
+            "id": data.get("id"),
+            "source": "whoami",
+        }
+    except Exception:
+        if not fallback:
+            raise
+        return {"login": fallback, "realName": "", "id": None, "source": "env-fallback"}
+
+
+# ── Sub-command: stats (open/closed counts + 7d trends + WoW projection) ────
+_OPEN_STATUSES_LIST = sorted(OPEN_STATUSES)
+_CLOSED_STATUSES_LIST = sorted(CLOSED_STATUSES)
+
+
+def cmd_stats(args) -> dict:
+    """Aggregate dashboard stats scoped to optional product/component.
+
+    Returns six per-window counts (open total / B / C, closed total / B / C)
+    plus 7-day filed/closed trends for the *current* and *previous* weeks so
+    the UI can render a week-over-week delta and a net-flow projection.
+
+    All counts are run in parallel — sequentially this would be ~3–5s.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timedelta, timezone
+
+    base_pairs: list[tuple[str, str]] = [("api_key", API_KEY)]
+    if args.product: base_pairs.append(("product", args.product))
+    if args.component: base_pairs.append(("component", args.component))
+    if args.assignee: base_pairs.append(("assigned_to", args.assignee))
+
+    today = datetime.now(timezone.utc)
+    d7 = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+    d14 = (today - timedelta(days=14)).strftime("%Y-%m-%d")
+
+    open_status_pairs = [("status", s) for s in _OPEN_STATUSES_LIST]
+    closed_status_pairs = [("status", s) for s in _CLOSED_STATUSES_LIST]
+    bc_pairs = [("severity", "Blocker"), ("severity", "Critical")]
+
+    # Each query is a list-of-tuples for requests; repeated keys (status,
+    # severity) MUST be sent as separate query params to Bugzilla, so a
+    # plain dict would collapse them and silently scope to the last value.
+    Query = dict  # alias for readability below
+    queries: dict[str, dict] = {
+        "open_total":      Query(pairs=base_pairs + open_status_pairs),
+        "open_blocker":    Query(pairs=base_pairs + open_status_pairs + [("severity", "Blocker")]),
+        "open_critical":   Query(pairs=base_pairs + open_status_pairs + [("severity", "Critical")]),
+        "closed_total":    Query(pairs=base_pairs + closed_status_pairs),
+        "closed_blocker":  Query(pairs=base_pairs + closed_status_pairs + [("severity", "Blocker")]),
+        "closed_critical": Query(pairs=base_pairs + closed_status_pairs + [("severity", "Critical")]),
+        "filed_7d":        Query(pairs=base_pairs + [("creation_time", d7)]),
+        "filed_7d_bc":     Query(pairs=base_pairs + bc_pairs + [("creation_time", d7)]),
+        "filed_prev_7d":   Query(pairs=base_pairs + [("creation_time", d14)],
+                                 max_creation=d7),
+        "filed_prev_7d_bc": Query(pairs=base_pairs + bc_pairs + [("creation_time", d14)],
+                                  max_creation=d7),
+        # Closed-in-window approximation: last_change_time in range AND
+        # currently in a closed status. Documented trade-off per spec.
+        "closed_7d":       Query(pairs=base_pairs + closed_status_pairs + [("last_change_time", d7)]),
+        "closed_7d_bc":    Query(pairs=base_pairs + closed_status_pairs + bc_pairs + [("last_change_time", d7)]),
+        "closed_prev_7d":  Query(pairs=base_pairs + closed_status_pairs + [("last_change_time", d14)],
+                                 max_change=d7),
+        "closed_prev_7d_bc": Query(pairs=base_pairs + closed_status_pairs + bc_pairs + [("last_change_time", d14)],
+                                   max_change=d7),
+    }
+
+    def run_one(item):
+        name, q = item
+        all_params = list(q["pairs"]) + [
+            ("include_fields", "id,creation_time,last_change_time"),
+            ("limit", "10000"),
+        ]
+        r = requests.get(f"{BUGZILLA_URL}/rest/bug",
+                         params=all_params, verify=VERIFY, timeout=30)
+        r.raise_for_status()
+        bugs = r.json().get("bugs", [])
+        # /rest/bug only accepts a >= bound on date fields, so the upper
+        # bound for "previous 7d" windows is enforced client-side.
+        max_creation = q.get("max_creation")
+        max_change = q.get("max_change")
+        if max_creation:
+            bugs = [b for b in bugs if (b.get("creation_time") or "")[:10] < max_creation]
+        if max_change:
+            bugs = [b for b in bugs if (b.get("last_change_time") or "")[:10] < max_change]
+        return name, len(bugs)
+
+    counts: dict[str, int] = {}
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for name, n in ex.map(run_one, list(queries.items())):
+            counts[name] = n
+
+    last7 = {
+        "filed": counts["filed_7d"],
+        "filedBC": counts["filed_7d_bc"],
+        "closed": counts["closed_7d"],
+        "closedBC": counts["closed_7d_bc"],
+    }
+    prev7 = {
+        "filed": counts["filed_prev_7d"],
+        "filedBC": counts["filed_prev_7d_bc"],
+        "closed": counts["closed_prev_7d"],
+        "closedBC": counts["closed_prev_7d_bc"],
+    }
+    return {
+        "scope": {
+            "product": args.product or None,
+            "component": args.component or None,
+            "assignee": args.assignee or None,
+        },
+        "open": {
+            "total": counts["open_total"],
+            "blocker": counts["open_blocker"],
+            "critical": counts["open_critical"],
+        },
+        "closed": {
+            "total": counts["closed_total"],
+            "blocker": counts["closed_blocker"],
+            "critical": counts["closed_critical"],
+        },
+        "trend": {
+            "last7d": last7,
+            "prev7d": prev7,
+            # Negative net flow = backlog shrinking (closing faster than filing)
+            "netFlowPerWeek": last7["filed"] - last7["closed"],
+        },
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 # ── Sub-command: config (show resolved credentials so the UI can sanity-check) ─
 def cmd_config(args) -> dict:
     return {
@@ -399,12 +567,20 @@ def main():
     sp = sub.add_parser("attachments")
     sp.add_argument("bug_id", type=int)
 
-    sp = sub.add_parser("config")
+    sub.add_parser("config")
+    sub.add_parser("products")
+    sub.add_parser("whoami")
+
+    sp = sub.add_parser("stats")
+    sp.add_argument("--product")
+    sp.add_argument("--component")
+    sp.add_argument("--assignee")
 
     args = p.parse_args()
     handlers = {
         "search": cmd_search, "fetch": cmd_fetch, "submit": cmd_submit,
         "attachments": cmd_attachments, "config": cmd_config,
+        "products": cmd_products, "whoami": cmd_whoami, "stats": cmd_stats,
     }
     try:
         out = handlers[args.cmd](args)

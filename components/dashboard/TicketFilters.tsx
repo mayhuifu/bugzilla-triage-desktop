@@ -1,23 +1,40 @@
 "use client";
 
-import { Search, Filter } from "lucide-react";
+import { Search, Filter, User } from "lucide-react";
+import type { ProductInfo, WhoAmI } from "@/lib/types";
 
 export interface FilterState {
   q: string;
+  product: string;     // "" = all products
+  component: string;   // "" = all components
   severity: string;
   status: string;
-  component: string;
+  myTickets: boolean;
 }
 
 export function TicketFilters({
   state,
   onChange,
+  products,
   componentOptions,
+  whoami,
 }: {
   state: FilterState;
   onChange: (s: FilterState) => void;
+  products: ProductInfo[];
+  // Components observed in the *currently loaded* ticket list. Used as a
+  // fallback when no product is selected (so the dropdown still has options
+  // before the products endpoint resolves).
   componentOptions: string[];
+  whoami: WhoAmI | null;
 }) {
+  // Component options come from the selected product when available — that
+  // way picking a product narrows the list to its real components rather
+  // than whatever happens to be in the loaded page of tickets.
+  const componentsForProduct = state.product
+    ? products.find(p => p.name === state.product)?.components ?? []
+    : componentOptions;
+
   return (
     <div className="card p-3 flex flex-wrap items-center gap-2">
       <div className="relative flex-1 min-w-[240px]">
@@ -31,6 +48,29 @@ export function TicketFilters({
       </div>
 
       <Filter className="w-4 h-4 text-slate-500 ml-1" />
+
+      <select
+        className="input w-auto"
+        value={state.product}
+        // Reset component when product changes so we don't keep a stale
+        // component name that doesn't exist under the new product.
+        onChange={e => onChange({ ...state, product: e.target.value, component: "" })}
+        title="Product"
+      >
+        <option value="">All products</option>
+        {products.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+      </select>
+
+      <select
+        className="input w-auto"
+        value={state.component}
+        onChange={e => onChange({ ...state, component: e.target.value })}
+        title="Component"
+        disabled={!componentsForProduct.length}
+      >
+        <option value="">All components</option>
+        {componentsForProduct.map(c => <option key={c} value={c}>{c}</option>)}
+      </select>
 
       <select
         className="input w-auto"
@@ -59,14 +99,19 @@ export function TicketFilters({
         <option value="IN_VERIFICATION">IN_VERIFICATION</option>
       </select>
 
-      <select
-        className="input w-auto"
-        value={state.component}
-        onChange={e => onChange({ ...state, component: e.target.value })}
+      <button
+        onClick={() => onChange({ ...state, myTickets: !state.myTickets })}
+        disabled={!whoami?.login}
+        title={whoami?.login ? `Filter to tickets assigned to ${whoami.login}` : "Sign-in not detected"}
+        className={`input w-auto flex items-center gap-1.5 text-xs disabled:opacity-50 ${
+          state.myTickets
+            ? "ring-2 ring-accent text-accent-glow"
+            : "text-slate-300"
+        }`}
       >
-        <option value="">All components</option>
-        {componentOptions.map(c => <option key={c} value={c}>{c}</option>)}
-      </select>
+        <User className="w-3.5 h-3.5" />
+        My Tickets
+      </button>
     </div>
   );
 }

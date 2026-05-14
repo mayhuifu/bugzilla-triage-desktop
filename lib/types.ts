@@ -125,6 +125,41 @@ export const TICKET_STATUSES: readonly TicketStatus[] = [
   "RESOLVED", "VERIFIED", "CLOSED",
 ];
 
+// ─────────────────────────────────────────────────────────────────
+// Dashboard filter helpers (products, whoami, stats)
+// ─────────────────────────────────────────────────────────────────
+
+export interface ProductInfo {
+  name: string;
+  components: string[];
+}
+
+export interface WhoAmI {
+  login: string;
+  realName: string;
+  id: number | null;
+  source: "whoami" | "env-fallback";
+}
+
+export interface TrendBucket {
+  filed: number;
+  filedBC: number;   // Blocker + Critical
+  closed: number;
+  closedBC: number;
+}
+
+export interface DashboardStats {
+  scope: { product: string | null; component: string | null; assignee: string | null };
+  open: { total: number; blocker: number; critical: number };
+  closed: { total: number; blocker: number; critical: number };
+  trend: {
+    last7d: TrendBucket;
+    prev7d: TrendBucket;
+    netFlowPerWeek: number;  // filed - closed for last 7d; positive = backlog growing
+  };
+  generatedAt: string;
+}
+
 export interface SubmissionReceipt {
   success: boolean;
   ticketId: number;
