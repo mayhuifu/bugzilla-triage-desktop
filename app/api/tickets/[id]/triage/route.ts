@@ -15,7 +15,8 @@ export async function POST(
 
   const url = new URL(req.url);
   const explicitMock = url.searchParams.get("mock") === "1";
-  const model = url.searchParams.get("model") || "haiku";
+  // No default: when omitted, triage_llm.py lets the claude CLI pick.
+  const model = url.searchParams.get("model") || undefined;
 
   // Step 1: fetch ticket detail (live or mock)
   let ticket;

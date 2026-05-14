@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
-import { AlertCircle, Loader2 } from "lucide-react";
+import { AlertCircle, GripVertical, Loader2 } from "lucide-react";
 import type { TicketDetail } from "@/lib/types";
 import { Logo } from "@/components/ui/Logo";
 import Link from "next/link";
@@ -11,6 +11,14 @@ import { TicketDescription } from "@/components/detail/TicketDescription";
 import { TicketComments } from "@/components/detail/TicketComments";
 import { TicketTimeline } from "@/components/detail/TicketTimeline";
 import { TriageChatPanel } from "@/components/triage/TriageChatPanel";
+
+// Resizable split. Stored as the pixel width of the right (AI) panel; the
+// left column flexes to fill. Bounded so neither side can collapse below a
+// useful width.
+const SPLIT_KEY = "triagePanelWidth";
+const SPLIT_DEFAULT = 440;
+const SPLIT_MIN = 320;
+const SPLIT_MAX = 900;
 
 export default function TicketDetailPage() {
   const params = useParams<{ id: string }>();
@@ -21,6 +29,63 @@ export default function TicketDetailPage() {
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // ── Resizable split between ticket context (left) and AI panel (right) ──
+  const [asideWidth, setAsideWidth] = useState<number>(SPLIT_DEFAULT);
+  const [dragging, setDragging] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const widthRef = useRef(SPLIT_DEFAULT);
+  widthRef.current = asideWidth;
+
+  // Read persisted width on mount (after hydration, to avoid SSR mismatch).
+  useEffect(() => {
+    try {
+      const saved = parseInt(localStorage.getItem(SPLIT_KEY) || "");
+      if (saved >= SPLIT_MIN && saved <= SPLIT_MAX) setAsideWidth(saved);
+    } catch { /* localStorage blocked — fall back to default */ }
+  }, []);
+
+  const onDragStart = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    setDragging(true);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  }, []);
+
+  // Document-level move/up listeners while dragging. clientX maps to a
+  // distance from the container's right edge → that's the desired aside
+  // width, clamped to [MIN, MAX].
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (ev: PointerEvent) => {
+      if (!containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const next = Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, rect.right - ev.clientX));
+      setAsideWidth(next);
+    };
+    const onUp = () => {
+      setDragging(false);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      try { localStorage.setItem(SPLIT_KEY, String(widthRef.current)); } catch { /* ignore */ }
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [dragging]);
+
+  // Double-click resets to the default — quick escape if the user drags
+  // themselves into a corner.
+  const onResetWidth = useCallback(() => {
+    setAsideWidth(SPLIT_DEFAULT);
+    try { localStorage.setItem(SPLIT_KEY, String(SPLIT_DEFAULT)); } catch { /* ignore */ }
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -71,9 +136,17 @@ export default function TicketDetailPage() {
         )}
 
         {!loading && ticket && (
-          <div className="grid grid-cols-1 xl:grid-cols-[1fr_440px] gap-5 animate-fade-in">
+          // CSS var lets us mix Tailwind's responsive `grid-cols-1` (mobile,
+          // stacked) with a user-resized 3-column grid above the `xl:`
+          // breakpoint (left content · drag handle · AI panel). On mobile
+          // the handle column is hidden and the panel stacks below.
+          <div
+            ref={containerRef}
+            className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_12px_var(--aside-w,440px)] gap-5 xl:gap-0 animate-fade-in"
+            style={{ ["--aside-w" as string]: `${asideWidth}px` } as React.CSSProperties}
+          >
             {/* Left/main: ticket context */}
-            <div className="space-y-4 min-w-0">
+            <div className="space-y-4 min-w-0 xl:pr-5">
               {error && (
                 <div className="card border-amber-500/30 bg-amber-950/10 p-3 text-xs text-amber-300">
                   {error}
@@ -85,8 +158,34 @@ export default function TicketDetailPage() {
               <TicketTimeline history={ticket.history} />
             </div>
 
+            {/* Drag handle — only visible on xl+. Sticky so it remains
+                reachable as the left column scrolls. Double-click resets. */}
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize AI panel"
+              onPointerDown={onDragStart}
+              onDoubleClick={onResetWidth}
+              title="Drag to resize · double-click to reset"
+              className={`hidden xl:flex items-center justify-center cursor-col-resize select-none
+                          sticky top-20 self-start h-[calc(100vh-6rem)] group ${
+                dragging ? "z-30" : "z-10"
+              }`}
+            >
+              <div className={`w-[3px] h-full rounded-full transition-colors ${
+                dragging
+                  ? "bg-accent shadow-[0_0_12px_-2px_rgba(168,85,247,0.7)]"
+                  : "bg-bg-border group-hover:bg-accent/60"
+              }`} />
+              <GripVertical
+                className={`absolute w-3.5 h-3.5 transition-colors ${
+                  dragging ? "text-accent" : "text-slate-600 group-hover:text-accent/80"
+                }`}
+              />
+            </div>
+
             {/* Right: sticky AI triage chat panel */}
-            <aside className="xl:sticky xl:top-20 xl:self-start xl:h-[calc(100vh-6rem)]">
+            <aside className="xl:sticky xl:top-20 xl:self-start xl:h-[calc(100vh-6rem)] xl:pl-5">
               <TriageChatPanel
                 ticketId={ticket.id}
                 ticketStatus={ticket.status}

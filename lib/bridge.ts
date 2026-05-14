@@ -11,6 +11,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { spawn } from "child_process";
+import { existsSync } from "fs";
 import path from "path";
 
 const REPO_ROOT = path.resolve(process.cwd());
@@ -20,13 +21,49 @@ const SCRIPTS_DIR = path.join(REPO_ROOT, "scripts");
 // a venv with the required deps (httpx, requests, urllib3) so the
 // dashboard works on a fresh checkout without a separate pip install.
 const UV_BIN = process.env.UV_BIN || `${process.env.HOME}/.local/bin/uv`;
-const BUGZILLA_MCP_PATH = process.env.BUGZILLA_MCP_PATH || path.resolve(REPO_ROOT, "..", "bugzilla-mcp");
+
+// Locate the bugzilla-mcp clone. Must mirror bz_bridge.find_bugzilla_mcp_path:
+// env var → peer dir → ~/bugzilla-mcp. From a git worktree, `..` resolves to
+// the worktree parent (.claude/worktrees/), so the peer-dir case fails for
+// worktrees — the home-dir fallback rescues that.
+function resolveBugzillaMcpPath(): string {
+  const env = process.env.BUGZILLA_MCP_PATH;
+  if (env) return env;
+  const peer = path.resolve(REPO_ROOT, "..", "bugzilla-mcp");
+  if (existsSync(path.join(peer, ".mcp.json"))) return peer;
+  const home = path.join(process.env.HOME || "", "bugzilla-mcp");
+  if (existsSync(path.join(home, ".mcp.json"))) return home;
+  return peer; // fallback — bz_bridge.py will surface a clear error
+}
+const BUGZILLA_MCP_PATH = resolveBugzillaMcpPath();
 
 interface RunOptions {
   args: string[];           // command-line args to pass to the Python script
   script: "bz_bridge" | "triage_llm";
   stdin?: string;           // optional JSON to pipe to stdin (used by triage_llm)
   timeoutMs?: number;
+}
+
+// Python bridges print `===RESULT===\n{json}` as their final line so we can
+// extract the result deterministically even if late stderr/urllib3 warnings
+// leak into stdout after the JSON.
+const RESULT_SENTINEL = "===RESULT===";
+
+function extractResultJson(stdout: string): unknown | null {
+  const idx = stdout.lastIndexOf(RESULT_SENTINEL);
+  const candidates: string[] = [];
+  if (idx !== -1) {
+    candidates.push(stdout.slice(idx + RESULT_SENTINEL.length).trim());
+  }
+  // Backwards-compat: last non-empty line, then any other line that parses.
+  const lines = stdout.trim().split("\n").map(l => l.trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) candidates.push(lines[i]);
+
+  for (const c of candidates) {
+    if (!c.startsWith("{")) continue;
+    try { return JSON.parse(c); } catch { /* keep scanning */ }
+  }
+  return null;
 }
 
 export async function runBridge<T = unknown>(opts: RunOptions): Promise<T> {
@@ -52,40 +89,41 @@ export async function runBridge<T = unknown>(opts: RunOptions): Promise<T> {
 
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const settle = (fn: () => void) => { if (settled) return; settled = true; fn(); };
 
     proc.stdout.on("data", chunk => { stdout += chunk.toString(); });
     proc.stderr.on("data", chunk => { stderr += chunk.toString(); });
 
+    const timeoutMs = opts.timeoutMs || 60_000;
     const timer = setTimeout(() => {
       proc.kill("SIGTERM");
-      reject(new Error(`bridge ${opts.script} timed out after ${opts.timeoutMs || 60000}ms`));
-    }, opts.timeoutMs || 60_000);
+      // Escalate to SIGKILL if the process ignores SIGTERM. Avoids orphaned
+      // uv/python processes when the underlying claude CLI is hung.
+      const killTimer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* dead */ } }, 5_000);
+      killTimer.unref?.();
+      settle(() => reject(new Error(`bridge ${opts.script} timed out after ${timeoutMs}ms`)));
+    }, timeoutMs);
 
     proc.on("close", code => {
       clearTimeout(timer);
-      const lastLine = stdout.trim().split("\n").pop() || "";
-      let parsed: unknown = null;
-      try {
-        parsed = JSON.parse(lastLine);
-      } catch {
-        // fallthrough — error handled below
-      }
+      const parsed = extractResultJson(stdout);
 
       if (code !== 0 || !parsed) {
         const errMsg = `bridge ${opts.script} exit=${code}; stderr: ${stderr.slice(0, 400)}; stdout: ${stdout.slice(0, 400)}`;
-        reject(new Error(errMsg));
+        settle(() => reject(new Error(errMsg)));
         return;
       }
       if (parsed && typeof parsed === "object" && "error" in parsed) {
-        reject(new Error((parsed as { error: string }).error));
+        settle(() => reject(new Error((parsed as { error: string }).error)));
         return;
       }
-      resolve(parsed as T);
+      settle(() => resolve(parsed as T));
     });
 
     proc.on("error", err => {
       clearTimeout(timer);
-      reject(err);
+      settle(() => reject(err));
     });
 
     if (opts.stdin) {
@@ -99,20 +137,33 @@ export async function runBridge<T = unknown>(opts: RunOptions): Promise<T> {
 
 // ─── Convenience wrappers ─────────────────────────────────────────
 
-import type { TicketSummary, TicketDetail, TriageResult, SubmissionReceipt, TicketStatus } from "./types";
+import type {
+  TicketSummary, TicketDetail, TriageResult, SubmissionReceipt, TicketStatus,
+  ProductInfo, WhoAmI, DashboardStats,
+} from "./types";
 
 export async function bridgeSearch(opts: {
-  product?: string; component?: string; status?: string;
-  severity?: string; assignee?: string; quicksearch?: string;
+  product?: string; component?: string;
+  // status/severity can be single or multi-value: bucket filters like
+  // "open" or "closed" expand to N statuses; the dropdowns send one each.
+  status?: string | string[];
+  severity?: string | string[];
+  assignee?: string; quicksearch?: string;
+  // YYYY-MM-DD lower bounds for date-window buckets (last 7d filed/closed).
+  createdSince?: string;
+  changedSince?: string;
   limit?: number; offset?: number;
 }): Promise<{ tickets: TicketSummary[]; total: number }> {
   const args: string[] = ["search"];
   if (opts.product) args.push("--product", opts.product);
   if (opts.component) args.push("--component", opts.component);
-  if (opts.status) args.push("--status", opts.status);
-  if (opts.severity) args.push("--severity", opts.severity);
+  const toArr = (v?: string | string[]) => Array.isArray(v) ? v : v ? [v] : [];
+  for (const s of toArr(opts.status)) args.push("--status", s);
+  for (const s of toArr(opts.severity)) args.push("--severity", s);
   if (opts.assignee) args.push("--assignee", opts.assignee);
   if (opts.quicksearch) args.push("--quicksearch", opts.quicksearch);
+  if (opts.createdSince) args.push("--created-since", opts.createdSince);
+  if (opts.changedSince) args.push("--changed-since", opts.changedSince);
   args.push("--limit", String(opts.limit ?? 100));
   args.push("--offset", String(opts.offset ?? 0));
   return runBridge({ script: "bz_bridge", args, timeoutMs: 45_000 });
@@ -168,6 +219,25 @@ export async function bridgeTriage(
   });
 }
 
+export async function bridgeProducts(): Promise<{ products: ProductInfo[] }> {
+  return runBridge({ script: "bz_bridge", args: ["products"], timeoutMs: 30_000 });
+}
+
+export async function bridgeWhoami(): Promise<WhoAmI> {
+  return runBridge({ script: "bz_bridge", args: ["whoami"], timeoutMs: 15_000 });
+}
+
+export async function bridgeStats(opts: {
+  product?: string; component?: string; assignee?: string;
+}): Promise<DashboardStats> {
+  const args = ["stats"];
+  if (opts.product) args.push("--product", opts.product);
+  if (opts.component) args.push("--component", opts.component);
+  if (opts.assignee) args.push("--assignee", opts.assignee);
+  // 14 parallel Bugzilla queries; allow generous headroom for slow VPN.
+  return runBridge({ script: "bz_bridge", args, timeoutMs: 60_000 });
+}
+
 // ─── Config probe ─────────────────────────────────────────────────
 
 export interface BridgeConfig {
@@ -181,17 +251,25 @@ export interface BridgeConfig {
   validResolutions: string[];
 }
 
+// Success is cached forever (config is static within a process). Errors are
+// cached for a short TTL only — otherwise a transient cold-start failure
+// (VPN coming up, slow uv venv build) would permanently break the app.
+const CONFIG_ERROR_TTL_MS = 30_000;
 let configCache: BridgeConfig | null = null;
-let configCacheError: string | null = null;
+let configCacheError: { message: string; expiresAt: number } | null = null;
 
 export async function getBridgeConfig(): Promise<{ config: BridgeConfig | null; error: string | null }> {
   if (configCache) return { config: configCache, error: null };
-  if (configCacheError) return { config: null, error: configCacheError };
+  if (configCacheError && Date.now() < configCacheError.expiresAt) {
+    return { config: null, error: configCacheError.message };
+  }
   try {
     configCache = await runBridge<BridgeConfig>({ script: "bz_bridge", args: ["config"], timeoutMs: 15_000 });
+    configCacheError = null;
     return { config: configCache, error: null };
   } catch (err) {
-    configCacheError = err instanceof Error ? err.message : String(err);
-    return { config: null, error: configCacheError };
+    const message = err instanceof Error ? err.message : String(err);
+    configCacheError = { message, expiresAt: Date.now() + CONFIG_ERROR_TTL_MS };
+    return { config: null, error: message };
   }
 }

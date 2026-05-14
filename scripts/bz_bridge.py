@@ -92,6 +92,12 @@ from requests.adapters import HTTPAdapter
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# WARNING: process-wide monkey-patch of `requests`. Safe here because each
+# invocation of bz_bridge.py is a fresh `uv run` subprocess that exits after
+# emitting one JSON line — there is no long-lived Python process. Do NOT
+# import this module from anywhere persistent (a long-running daemon, a
+# WSGI worker) without replacing this patch with a Session subclass first.
+#
 # Monkey-patch requests.Session.send to add transparent retry on SSL EOF /
 # connection resets — common on internal-VPN-tunneled Bugzilla instances.
 # This applies to skill_fetch / skill_post which also use `requests`.
@@ -133,6 +139,14 @@ BUGZILLA_URL = os.environ.get("BUGZILLA_URL", "")
 API_KEY = os.environ.get("BUGZILLA_API_KEY", "")
 INSECURE = os.environ.get("BUGZILLA_INSECURE", "true").lower() == "true"
 VERIFY = not INSECURE
+
+if INSECURE:
+    # Surface this loudly on every invocation so it can't silently ship to
+    # an environment that should be verifying certs.
+    sys.stderr.write(
+        f"[bz_bridge] WARNING: TLS verification disabled (BUGZILLA_INSECURE=true) "
+        f"for {BUGZILLA_URL or '<unset>'}\n"
+    )
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -194,29 +208,42 @@ def _normalize_summary(raw: dict) -> dict:
 
 # ── Sub-command: search ──────────────────────────────────────────────────────
 def cmd_search(args) -> dict:
-    params = {
-        "api_key": API_KEY,
-        "limit": args.limit,
-        "offset": args.offset,
-        "include_fields": (
-            "id,summary,status,resolution,product,component,priority,severity,"
-            "assigned_to,creator,creation_time,last_change_time,keywords,cf_label"
-        ),
-        "order": "last_change_time DESC",
-    }
-    if args.product: params["product"] = args.product
-    if args.component: params["component"] = args.component
-    if args.status: params["status"] = args.status
-    if args.severity: params["severity"] = args.severity
-    if args.assignee: params["assigned_to"] = args.assignee
-    if args.quicksearch: params["quicksearch"] = args.quicksearch
+    # Multi-value filters (status, severity) MUST be sent as repeated query
+    # params or Bugzilla scopes to the LAST value only. requests.get accepts
+    # a list-of-tuples for this purpose.
+    pairs: list[tuple[str, str]] = [
+        ("api_key", API_KEY),
+        ("limit", str(args.limit)),
+        ("offset", str(args.offset)),
+        ("include_fields",
+         "id,summary,status,resolution,product,component,priority,severity,"
+         "assigned_to,creator,creation_time,last_change_time,keywords,cf_label"),
+        # Bugzilla's `order` param uses buglist column names (changeddate,
+        # bug_id), not REST field names (last_change_time). Passing the
+        # REST name is silently ignored, falling back to bug_id ASC — so
+        # we'd see the oldest tickets first instead of the newest.
+        ("order", "changeddate DESC"),
+    ]
+    if args.product: pairs.append(("product", args.product))
+    if args.component: pairs.append(("component", args.component))
+    if args.assignee: pairs.append(("assigned_to", args.assignee))
+    if args.quicksearch: pairs.append(("quicksearch", args.quicksearch))
+    # ISO date >= bounds for the last-N-days buckets ("filed in last 7d",
+    # "closed in last 7d"). Bugzilla only supports a lower bound on these
+    # date fields — sufficient for our use case.
+    if args.created_since: pairs.append(("creation_time", args.created_since))
+    if args.changed_since: pairs.append(("last_change_time", args.changed_since))
+    for s in (args.status or []):
+        pairs.append(("status", s))
+    for s in (args.severity or []):
+        pairs.append(("severity", s))
 
     # Retry on intermittent SSL EOFs (common on internal VPN tunnels)
     last_err: Optional[Exception] = None
     for attempt in range(3):
         try:
             r = requests.get(f"{BUGZILLA_URL}/rest/bug",
-                             params=params, verify=VERIFY, timeout=30)
+                             params=pairs, verify=VERIFY, timeout=30)
             r.raise_for_status()
             bugs = r.json().get("bugs", [])
             return {"tickets": [_normalize_summary(b) for b in bugs], "total": len(bugs)}
@@ -342,6 +369,174 @@ def cmd_attachments(args) -> dict:
     return {"attachments": out}
 
 
+# ── Sub-command: products (drive the product/component dropdowns) ───────────
+def cmd_products(args) -> dict:
+    """Return accessible products with their components for the filter UI.
+    One round-trip; uses include_fields to keep the payload small."""
+    params = {
+        "api_key": API_KEY,
+        "type": "accessible",
+        "include_fields": "name,is_active,components.name,components.is_active",
+    }
+    r = requests.get(f"{BUGZILLA_URL}/rest/product",
+                     params=params, verify=VERIFY, timeout=30)
+    r.raise_for_status()
+    raw = r.json().get("products", [])
+    products = []
+    for p in raw:
+        if not p.get("is_active", True):
+            continue
+        comps = sorted(
+            [c["name"] for c in p.get("components", []) if c.get("is_active", True)]
+        )
+        products.append({"name": p["name"], "components": comps})
+    products.sort(key=lambda x: x["name"])
+    return {"products": products}
+
+
+# ── Sub-command: whoami (used by the "My Tickets" toggle) ────────────────────
+def cmd_whoami(args) -> dict:
+    """Identify the current API key holder. Falls back to BUGZILLA_LOGIN if
+    /rest/whoami is unavailable (older Bugzilla deployments)."""
+    fallback = os.environ.get("BUGZILLA_LOGIN", "")
+    try:
+        r = requests.get(f"{BUGZILLA_URL}/rest/whoami",
+                         params={"api_key": API_KEY},
+                         verify=VERIFY, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        return {
+            "login": data.get("name") or fallback,
+            "realName": data.get("real_name") or "",
+            "id": data.get("id"),
+            "source": "whoami",
+        }
+    except Exception:
+        if not fallback:
+            raise
+        return {"login": fallback, "realName": "", "id": None, "source": "env-fallback"}
+
+
+# ── Sub-command: stats (open/closed counts + 7d trends + WoW projection) ────
+_OPEN_STATUSES_LIST = sorted(OPEN_STATUSES)
+_CLOSED_STATUSES_LIST = sorted(CLOSED_STATUSES)
+
+
+def cmd_stats(args) -> dict:
+    """Aggregate dashboard stats scoped to optional product/component.
+
+    Returns six per-window counts (open total / B / C, closed total / B / C)
+    plus 7-day filed/closed trends for the *current* and *previous* weeks so
+    the UI can render a week-over-week delta and a net-flow projection.
+
+    All counts are run in parallel — sequentially this would be ~3–5s.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timedelta, timezone
+
+    base_pairs: list[tuple[str, str]] = [("api_key", API_KEY)]
+    if args.product: base_pairs.append(("product", args.product))
+    if args.component: base_pairs.append(("component", args.component))
+    if args.assignee: base_pairs.append(("assigned_to", args.assignee))
+
+    today = datetime.now(timezone.utc)
+    d7 = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+    d14 = (today - timedelta(days=14)).strftime("%Y-%m-%d")
+
+    open_status_pairs = [("status", s) for s in _OPEN_STATUSES_LIST]
+    closed_status_pairs = [("status", s) for s in _CLOSED_STATUSES_LIST]
+    bc_pairs = [("severity", "Blocker"), ("severity", "Critical")]
+
+    # Each query is a list-of-tuples for requests; repeated keys (status,
+    # severity) MUST be sent as separate query params to Bugzilla, so a
+    # plain dict would collapse them and silently scope to the last value.
+    Query = dict  # alias for readability below
+    queries: dict[str, dict] = {
+        "open_total":      Query(pairs=base_pairs + open_status_pairs),
+        "open_blocker":    Query(pairs=base_pairs + open_status_pairs + [("severity", "Blocker")]),
+        "open_critical":   Query(pairs=base_pairs + open_status_pairs + [("severity", "Critical")]),
+        "closed_total":    Query(pairs=base_pairs + closed_status_pairs),
+        "closed_blocker":  Query(pairs=base_pairs + closed_status_pairs + [("severity", "Blocker")]),
+        "closed_critical": Query(pairs=base_pairs + closed_status_pairs + [("severity", "Critical")]),
+        "filed_7d":        Query(pairs=base_pairs + [("creation_time", d7)]),
+        "filed_7d_bc":     Query(pairs=base_pairs + bc_pairs + [("creation_time", d7)]),
+        "filed_prev_7d":   Query(pairs=base_pairs + [("creation_time", d14)],
+                                 max_creation=d7),
+        "filed_prev_7d_bc": Query(pairs=base_pairs + bc_pairs + [("creation_time", d14)],
+                                  max_creation=d7),
+        # Closed-in-window approximation: last_change_time in range AND
+        # currently in a closed status. Documented trade-off per spec.
+        "closed_7d":       Query(pairs=base_pairs + closed_status_pairs + [("last_change_time", d7)]),
+        "closed_7d_bc":    Query(pairs=base_pairs + closed_status_pairs + bc_pairs + [("last_change_time", d7)]),
+        "closed_prev_7d":  Query(pairs=base_pairs + closed_status_pairs + [("last_change_time", d14)],
+                                 max_change=d7),
+        "closed_prev_7d_bc": Query(pairs=base_pairs + closed_status_pairs + bc_pairs + [("last_change_time", d14)],
+                                   max_change=d7),
+    }
+
+    def run_one(item):
+        name, q = item
+        all_params = list(q["pairs"]) + [
+            ("include_fields", "id,creation_time,last_change_time"),
+            ("limit", "10000"),
+        ]
+        r = requests.get(f"{BUGZILLA_URL}/rest/bug",
+                         params=all_params, verify=VERIFY, timeout=30)
+        r.raise_for_status()
+        bugs = r.json().get("bugs", [])
+        # /rest/bug only accepts a >= bound on date fields, so the upper
+        # bound for "previous 7d" windows is enforced client-side.
+        max_creation = q.get("max_creation")
+        max_change = q.get("max_change")
+        if max_creation:
+            bugs = [b for b in bugs if (b.get("creation_time") or "")[:10] < max_creation]
+        if max_change:
+            bugs = [b for b in bugs if (b.get("last_change_time") or "")[:10] < max_change]
+        return name, len(bugs)
+
+    counts: dict[str, int] = {}
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for name, n in ex.map(run_one, list(queries.items())):
+            counts[name] = n
+
+    last7 = {
+        "filed": counts["filed_7d"],
+        "filedBC": counts["filed_7d_bc"],
+        "closed": counts["closed_7d"],
+        "closedBC": counts["closed_7d_bc"],
+    }
+    prev7 = {
+        "filed": counts["filed_prev_7d"],
+        "filedBC": counts["filed_prev_7d_bc"],
+        "closed": counts["closed_prev_7d"],
+        "closedBC": counts["closed_prev_7d_bc"],
+    }
+    return {
+        "scope": {
+            "product": args.product or None,
+            "component": args.component or None,
+            "assignee": args.assignee or None,
+        },
+        "open": {
+            "total": counts["open_total"],
+            "blocker": counts["open_blocker"],
+            "critical": counts["open_critical"],
+        },
+        "closed": {
+            "total": counts["closed_total"],
+            "blocker": counts["closed_blocker"],
+            "critical": counts["closed_critical"],
+        },
+        "trend": {
+            "last7d": last7,
+            "prev7d": prev7,
+            # Negative net flow = backlog shrinking (closing faster than filing)
+            "netFlowPerWeek": last7["filed"] - last7["closed"],
+        },
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 # ── Sub-command: config (show resolved credentials so the UI can sanity-check) ─
 def cmd_config(args) -> dict:
     return {
@@ -364,10 +559,17 @@ def main():
     sp = sub.add_parser("search")
     sp.add_argument("--product")
     sp.add_argument("--component")
-    sp.add_argument("--status")
-    sp.add_argument("--severity")
+    # Multi-value: pass --status once per allowed status (e.g. for "open"
+    # buckets that span 7 statuses). Same for --severity. Bugzilla scopes
+    # to the LAST value if duplicates collapse, so repeating is required.
+    sp.add_argument("--status", action="append", default=[])
+    sp.add_argument("--severity", action="append", default=[])
     sp.add_argument("--assignee")
     sp.add_argument("--quicksearch")
+    # Date >= bounds (YYYY-MM-DD) for trend buckets. Bugzilla maps these to
+    # `creation_time` / `last_change_time` REST params (>= comparisons).
+    sp.add_argument("--created-since", dest="created_since")
+    sp.add_argument("--changed-since", dest="changed_since")
     sp.add_argument("--limit", type=int, default=100)
     sp.add_argument("--offset", type=int, default=0)
 
@@ -385,17 +587,27 @@ def main():
     sp = sub.add_parser("attachments")
     sp.add_argument("bug_id", type=int)
 
-    sp = sub.add_parser("config")
+    sub.add_parser("config")
+    sub.add_parser("products")
+    sub.add_parser("whoami")
+
+    sp = sub.add_parser("stats")
+    sp.add_argument("--product")
+    sp.add_argument("--component")
+    sp.add_argument("--assignee")
 
     args = p.parse_args()
     handlers = {
         "search": cmd_search, "fetch": cmd_fetch, "submit": cmd_submit,
         "attachments": cmd_attachments, "config": cmd_config,
+        "products": cmd_products, "whoami": cmd_whoami, "stats": cmd_stats,
     }
     try:
         out = handlers[args.cmd](args)
+        print("===RESULT===")
         print(json.dumps(out, default=str))
     except Exception as e:
+        print("===RESULT===")
         print(json.dumps({"error": str(e), "type": type(e).__name__}))
         sys.exit(1)
 

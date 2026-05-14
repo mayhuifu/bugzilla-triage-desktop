@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { bridgeSubmit } from "@/lib/bridge";
-import type { TriageSubmission, SubmissionReceipt } from "@/lib/types";
+import { bridgeSubmit, bridgeFetch } from "@/lib/bridge";
+import type { TriageSubmission, SubmissionReceipt, TicketStatus } from "@/lib/types";
+import { TICKET_STATUSES } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
+
+const ALLOWED_TRANSITIONS = new Set<TicketStatus>(TICKET_STATUSES);
 
 export async function POST(
   req: NextRequest,
@@ -16,6 +19,20 @@ export async function POST(
   const submission = (await req.json()) as TriageSubmission & { mock?: boolean };
   if (!submission?.comment?.trim()) {
     return NextResponse.json({ error: "comment is required" }, { status: 400 });
+  }
+
+  if (submission.transitionTo && !ALLOWED_TRANSITIONS.has(submission.transitionTo)) {
+    return NextResponse.json(
+      { error: `invalid transitionTo: ${submission.transitionTo}` },
+      { status: 400 },
+    );
+  }
+
+  if (submission.transitionTo === "RESOLVED" && !submission.resolution) {
+    return NextResponse.json(
+      { error: "resolution is required when transitionTo=RESOLVED" },
+      { status: 400 },
+    );
   }
 
   const explicitMock = submission.mock === true ||
@@ -33,6 +50,22 @@ export async function POST(
     return NextResponse.json(receipt);
   }
 
+  // Confirm the ticket is reachable on the real Bugzilla before mutating.
+  // The triage step silently falls back to mock data when the bridge fails,
+  // so a "live" UI banner does NOT guarantee the live path. Refuse to post
+  // unless we can prove the ticket exists on the real instance right now.
+  try {
+    await bridgeFetch(ticketId);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "unknown";
+    return NextResponse.json({
+      success: false,
+      ticketId,
+      postedAt: new Date().toISOString(),
+      message: `Refusing to submit: Bugzilla is unreachable (${msg}). The triage may have been generated against mock data.`,
+    }, { status: 503 });
+  }
+
   try {
     // The Python skill auto-applies the "Analyzed by Claude:" prefix and
     // the "Analyzed by Claude" cf_label per umsemi conventions.
@@ -40,6 +73,7 @@ export async function POST(
       id: ticketId,
       comment: submission.comment,
       transitionTo: submission.transitionTo,
+      resolution: submission.resolution,
     });
     return NextResponse.json(receipt);
   } catch (err) {

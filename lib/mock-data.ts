@@ -4,7 +4,10 @@
 // cleanly end-to-end without any backend dependencies.
 // ─────────────────────────────────────────────────────────────────
 
-import type { TicketDetail, TicketSummary, Severity, TicketStatus } from "./types";
+import type {
+  TicketDetail, TicketSummary, Severity, TicketStatus,
+  ProductInfo, WhoAmI, DashboardStats,
+} from "./types";
 
 function iso(daysAgo: number, hour = 9): string {
   const d = new Date();
@@ -131,6 +134,110 @@ how severe the impact is.
     ],
   },
 };
+
+// Filter helpers used by mock /api/* routes when the live backend isn't
+// reachable. They mirror the same product/component/assignee semantics
+// as bz_bridge.py so the UI behaves identically against either source.
+const CLOSED_SET = new Set<TicketStatus>(["RESOLVED", "VERIFIED", "CLOSED"]);
+
+export function mockSearch(opts: {
+  product?: string; component?: string;
+  status?: string | string[]; severity?: string | string[];
+  assignee?: string; q?: string; limit?: number;
+  createdSince?: string; changedSince?: string;  // YYYY-MM-DD lower bounds
+}): { tickets: TicketSummary[]; total: number } {
+  const statusSet = new Set(Array.isArray(opts.status) ? opts.status : opts.status ? [opts.status] : []);
+  const sevSet = new Set(Array.isArray(opts.severity) ? opts.severity : opts.severity ? [opts.severity] : []);
+  const q = (opts.q || "").toLowerCase();
+  const createdAfter = opts.createdSince ? new Date(opts.createdSince).getTime() : 0;
+  const changedAfter = opts.changedSince ? new Date(opts.changedSince).getTime() : 0;
+
+  const filtered = MOCK_SUMMARIES.filter(t =>
+    (!opts.product || t.product === opts.product) &&
+    (!opts.component || t.component === opts.component) &&
+    (!opts.assignee || t.assignee === opts.assignee) &&
+    (statusSet.size === 0 || statusSet.has(t.status)) &&
+    (sevSet.size === 0 || sevSet.has(t.severity)) &&
+    (!createdAfter || new Date(t.creationTime).getTime() >= createdAfter) &&
+    (!changedAfter || new Date(t.lastChangeTime).getTime() >= changedAfter) &&
+    (!q ||
+      t.summary.toLowerCase().includes(q) ||
+      String(t.id).includes(q) ||
+      t.assignee.toLowerCase().includes(q) ||
+      t.component.toLowerCase().includes(q))
+  );
+  // Sort newest-first to match the live `order=changeddate DESC` behavior.
+  filtered.sort((a, b) =>
+    new Date(b.lastChangeTime).getTime() - new Date(a.lastChangeTime).getTime()
+  );
+  const limit = opts.limit ?? 25;
+  return { tickets: filtered.slice(0, limit), total: filtered.length };
+}
+
+export const MOCK_PRODUCTS: ProductInfo[] = (() => {
+  const grouped = new Map<string, Set<string>>();
+  for (const t of MOCK_SUMMARIES) {
+    if (!grouped.has(t.product)) grouped.set(t.product, new Set());
+    grouped.get(t.product)!.add(t.component);
+  }
+  return Array.from(grouped.entries())
+    .map(([name, comps]) => ({ name, components: Array.from(comps).sort() }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+})();
+
+export const MOCK_WHOAMI: WhoAmI = {
+  login: "demo.user@umsemi.com",
+  realName: "Demo User",
+  id: null,
+  source: "env-fallback",
+};
+
+export function buildMockStats(opts: {
+  product?: string; component?: string; assignee?: string;
+}): DashboardStats {
+  const scoped = MOCK_SUMMARIES.filter(t =>
+    (!opts.product || t.product === opts.product) &&
+    (!opts.component || t.component === opts.component) &&
+    (!opts.assignee || t.assignee === opts.assignee),
+  );
+  const open = scoped.filter(t => !CLOSED_SET.has(t.status));
+  const closed = scoped.filter(t => CLOSED_SET.has(t.status));
+  const sevCount = (arr: TicketSummary[], sev: Severity) =>
+    arr.filter(t => t.severity === sev).length;
+
+  const inWindow = (iso: string, days: number) => {
+    const t = new Date(iso).getTime();
+    const cutoff = Date.now() - days * 86_400_000;
+    return t >= cutoff;
+  };
+  const inPrevWindow = (iso: string) => {
+    const t = new Date(iso).getTime();
+    const start = Date.now() - 14 * 86_400_000;
+    const end = Date.now() - 7 * 86_400_000;
+    return t >= start && t < end;
+  };
+  const isBC = (t: TicketSummary) => t.severity === "Blocker" || t.severity === "Critical";
+
+  const last7d = {
+    filed: scoped.filter(t => inWindow(t.creationTime, 7)).length,
+    filedBC: scoped.filter(t => inWindow(t.creationTime, 7) && isBC(t)).length,
+    closed: closed.filter(t => inWindow(t.lastChangeTime, 7)).length,
+    closedBC: closed.filter(t => inWindow(t.lastChangeTime, 7) && isBC(t)).length,
+  };
+  const prev7d = {
+    filed: scoped.filter(t => inPrevWindow(t.creationTime)).length,
+    filedBC: scoped.filter(t => inPrevWindow(t.creationTime) && isBC(t)).length,
+    closed: closed.filter(t => inPrevWindow(t.lastChangeTime)).length,
+    closedBC: closed.filter(t => inPrevWindow(t.lastChangeTime) && isBC(t)).length,
+  };
+  return {
+    scope: { product: opts.product || null, component: opts.component || null, assignee: opts.assignee || null },
+    open: { total: open.length, blocker: sevCount(open, "Blocker"), critical: sevCount(open, "Critical") },
+    closed: { total: closed.length, blocker: sevCount(closed, "Blocker"), critical: sevCount(closed, "Critical") },
+    trend: { last7d, prev7d, netFlowPerWeek: last7d.filed - last7d.closed },
+    generatedAt: new Date().toISOString(),
+  };
+}
 
 export function buildMockDetail(id: number): TicketDetail {
   if (MOCK_DETAILS[id]) return MOCK_DETAILS[id];

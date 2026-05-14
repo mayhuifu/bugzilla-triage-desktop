@@ -43,11 +43,13 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
   const [receipt, setReceipt] = useState<SubmissionReceipt | null>(null);
   const autoRanRef = useRef(false);
   const endRef = useRef<HTMLDivElement>(null);
+  const turnSeqRef = useRef(0);
 
   const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
   function addTurn(t: Omit<ChatTurn, "id" | "time">) {
-    setTurns(prev => [...prev, { ...t, id: `t${Date.now()}_${prev.length}`, time: now() }]);
+    const id = `t${++turnSeqRef.current}`;
+    setTurns(prev => [...prev, { ...t, id, time: now() }]);
   }
 
   // Initial "ticket loaded" turn
@@ -70,8 +72,12 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autotriage]);
 
-  // Auto-scroll to bottom
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [turns, loading, followupLoading]);
+  // Auto-scroll only on new turns. Depending on `loading` / `followupLoading`
+  // would yank the viewport whenever the spinner toggled, fighting users who
+  // scrolled up to re-read an earlier section.
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [turns.length]);
 
   // ── Workflow steps ─────────────────────────────────────────────
   const steps: StepState[] = useMemo(() => [
@@ -252,7 +258,7 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
           <ChatBubble key={turn.id} role="ai" time={turn.time} title={`Likely root causes (${t.rootCauses.length})`} subtitle="Ranked by likelihood">
             <div className="space-y-2">
               {t.rootCauses.map((rc, i) => (
-                <div key={i} className="bg-bg-panel/40 rounded-lg p-2.5 border border-bg-border/40">
+                <div key={`${t.generatedAt}-rc-${i}`} className="bg-bg-panel/40 rounded-lg p-2.5 border border-bg-border/40">
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[11px] font-mono text-slate-400">H{rc.rank}</span>
                     <span className={`badge text-[10px] ${
@@ -285,7 +291,7 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
           <ChatBubble key={turn.id} role="ai" time={turn.time} title="Missing information">
             <ul className="space-y-1">
               {t.missingInformation.map((m, i) => (
-                <li key={i} className="flex gap-2 text-xs text-slate-300">
+                <li key={`${t.generatedAt}-mi-${i}`} className="flex gap-2 text-xs text-slate-300">
                   <span className="text-amber-400 mt-0.5">•</span>
                   <EditableField
                     value={m}
@@ -306,7 +312,7 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
           <ChatBubble key={turn.id} role="ai" time={turn.time} title="Recommended next steps">
             <div className="space-y-2">
               {t.nextSteps.map((step, i) => (
-                <div key={i} className="bg-bg-panel/40 rounded-lg p-2.5 border border-bg-border/40">
+                <div key={`${t.generatedAt}-ns-${i}`} className="bg-bg-panel/40 rounded-lg p-2.5 border border-bg-border/40">
                   <div className="flex items-center gap-2 mb-1 text-[11px]">
                     <span className="text-slate-500">Owner</span>
                     <EditableField
