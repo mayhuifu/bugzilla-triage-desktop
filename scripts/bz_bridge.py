@@ -208,29 +208,42 @@ def _normalize_summary(raw: dict) -> dict:
 
 # ── Sub-command: search ──────────────────────────────────────────────────────
 def cmd_search(args) -> dict:
-    params = {
-        "api_key": API_KEY,
-        "limit": args.limit,
-        "offset": args.offset,
-        "include_fields": (
-            "id,summary,status,resolution,product,component,priority,severity,"
-            "assigned_to,creator,creation_time,last_change_time,keywords,cf_label"
-        ),
-        "order": "last_change_time DESC",
-    }
-    if args.product: params["product"] = args.product
-    if args.component: params["component"] = args.component
-    if args.status: params["status"] = args.status
-    if args.severity: params["severity"] = args.severity
-    if args.assignee: params["assigned_to"] = args.assignee
-    if args.quicksearch: params["quicksearch"] = args.quicksearch
+    # Multi-value filters (status, severity) MUST be sent as repeated query
+    # params or Bugzilla scopes to the LAST value only. requests.get accepts
+    # a list-of-tuples for this purpose.
+    pairs: list[tuple[str, str]] = [
+        ("api_key", API_KEY),
+        ("limit", str(args.limit)),
+        ("offset", str(args.offset)),
+        ("include_fields",
+         "id,summary,status,resolution,product,component,priority,severity,"
+         "assigned_to,creator,creation_time,last_change_time,keywords,cf_label"),
+        # Bugzilla's `order` param uses buglist column names (changeddate,
+        # bug_id), not REST field names (last_change_time). Passing the
+        # REST name is silently ignored, falling back to bug_id ASC — so
+        # we'd see the oldest tickets first instead of the newest.
+        ("order", "changeddate DESC"),
+    ]
+    if args.product: pairs.append(("product", args.product))
+    if args.component: pairs.append(("component", args.component))
+    if args.assignee: pairs.append(("assigned_to", args.assignee))
+    if args.quicksearch: pairs.append(("quicksearch", args.quicksearch))
+    # ISO date >= bounds for the last-N-days buckets ("filed in last 7d",
+    # "closed in last 7d"). Bugzilla only supports a lower bound on these
+    # date fields — sufficient for our use case.
+    if args.created_since: pairs.append(("creation_time", args.created_since))
+    if args.changed_since: pairs.append(("last_change_time", args.changed_since))
+    for s in (args.status or []):
+        pairs.append(("status", s))
+    for s in (args.severity or []):
+        pairs.append(("severity", s))
 
     # Retry on intermittent SSL EOFs (common on internal VPN tunnels)
     last_err: Optional[Exception] = None
     for attempt in range(3):
         try:
             r = requests.get(f"{BUGZILLA_URL}/rest/bug",
-                             params=params, verify=VERIFY, timeout=30)
+                             params=pairs, verify=VERIFY, timeout=30)
             r.raise_for_status()
             bugs = r.json().get("bugs", [])
             return {"tickets": [_normalize_summary(b) for b in bugs], "total": len(bugs)}
@@ -546,10 +559,17 @@ def main():
     sp = sub.add_parser("search")
     sp.add_argument("--product")
     sp.add_argument("--component")
-    sp.add_argument("--status")
-    sp.add_argument("--severity")
+    # Multi-value: pass --status once per allowed status (e.g. for "open"
+    # buckets that span 7 statuses). Same for --severity. Bugzilla scopes
+    # to the LAST value if duplicates collapse, so repeating is required.
+    sp.add_argument("--status", action="append", default=[])
+    sp.add_argument("--severity", action="append", default=[])
     sp.add_argument("--assignee")
     sp.add_argument("--quicksearch")
+    # Date >= bounds (YYYY-MM-DD) for trend buckets. Bugzilla maps these to
+    # `creation_time` / `last_change_time` REST params (>= comparisons).
+    sp.add_argument("--created-since", dest="created_since")
+    sp.add_argument("--changed-since", dest="changed_since")
     sp.add_argument("--limit", type=int, default=100)
     sp.add_argument("--offset", type=int, default=0)
 

@@ -18,6 +18,7 @@ export function TicketFilters({
   products,
   componentOptions,
   whoami,
+  bucketActive = false,
 }: {
   state: FilterState;
   onChange: (s: FilterState) => void;
@@ -27,6 +28,10 @@ export function TicketFilters({
   // before the products endpoint resolves).
   componentOptions: string[];
   whoami: WhoAmI | null;
+  // When the user has clicked a status card, the bucket filter overrides
+  // these dropdowns server-side. We disable them visually so the user
+  // doesn't think they can stack.
+  bucketActive?: boolean;
 }) {
   // Component options come from the selected product when available — that
   // way picking a product narrows the list to its real components rather
@@ -73,9 +78,11 @@ export function TicketFilters({
       </select>
 
       <select
-        className="input w-auto"
+        className="input w-auto disabled:opacity-40"
         value={state.severity}
         onChange={e => onChange({ ...state, severity: e.target.value })}
+        disabled={bucketActive}
+        title={bucketActive ? "Cleared by status-card filter" : undefined}
       >
         <option value="">All severities</option>
         <option value="Blocker">Blocker</option>
@@ -86,9 +93,11 @@ export function TicketFilters({
       </select>
 
       <select
-        className="input w-auto"
+        className="input w-auto disabled:opacity-40"
         value={state.status}
         onChange={e => onChange({ ...state, status: e.target.value })}
+        disabled={bucketActive}
+        title={bucketActive ? "Cleared by status-card filter" : undefined}
       >
         <option value="">All statuses</option>
         <option value="NEW">NEW</option>

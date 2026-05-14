@@ -140,6 +140,40 @@ how severe the impact is.
 // as bz_bridge.py so the UI behaves identically against either source.
 const CLOSED_SET = new Set<TicketStatus>(["RESOLVED", "VERIFIED", "CLOSED"]);
 
+export function mockSearch(opts: {
+  product?: string; component?: string;
+  status?: string | string[]; severity?: string | string[];
+  assignee?: string; q?: string; limit?: number;
+  createdSince?: string; changedSince?: string;  // YYYY-MM-DD lower bounds
+}): { tickets: TicketSummary[]; total: number } {
+  const statusSet = new Set(Array.isArray(opts.status) ? opts.status : opts.status ? [opts.status] : []);
+  const sevSet = new Set(Array.isArray(opts.severity) ? opts.severity : opts.severity ? [opts.severity] : []);
+  const q = (opts.q || "").toLowerCase();
+  const createdAfter = opts.createdSince ? new Date(opts.createdSince).getTime() : 0;
+  const changedAfter = opts.changedSince ? new Date(opts.changedSince).getTime() : 0;
+
+  const filtered = MOCK_SUMMARIES.filter(t =>
+    (!opts.product || t.product === opts.product) &&
+    (!opts.component || t.component === opts.component) &&
+    (!opts.assignee || t.assignee === opts.assignee) &&
+    (statusSet.size === 0 || statusSet.has(t.status)) &&
+    (sevSet.size === 0 || sevSet.has(t.severity)) &&
+    (!createdAfter || new Date(t.creationTime).getTime() >= createdAfter) &&
+    (!changedAfter || new Date(t.lastChangeTime).getTime() >= changedAfter) &&
+    (!q ||
+      t.summary.toLowerCase().includes(q) ||
+      String(t.id).includes(q) ||
+      t.assignee.toLowerCase().includes(q) ||
+      t.component.toLowerCase().includes(q))
+  );
+  // Sort newest-first to match the live `order=changeddate DESC` behavior.
+  filtered.sort((a, b) =>
+    new Date(b.lastChangeTime).getTime() - new Date(a.lastChangeTime).getTime()
+  );
+  const limit = opts.limit ?? 25;
+  return { tickets: filtered.slice(0, limit), total: filtered.length };
+}
+
 export const MOCK_PRODUCTS: ProductInfo[] = (() => {
   const grouped = new Map<string, Set<string>>();
   for (const t of MOCK_SUMMARIES) {

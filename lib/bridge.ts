@@ -11,6 +11,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { spawn } from "child_process";
+import { existsSync } from "fs";
 import path from "path";
 
 const REPO_ROOT = path.resolve(process.cwd());
@@ -20,7 +21,21 @@ const SCRIPTS_DIR = path.join(REPO_ROOT, "scripts");
 // a venv with the required deps (httpx, requests, urllib3) so the
 // dashboard works on a fresh checkout without a separate pip install.
 const UV_BIN = process.env.UV_BIN || `${process.env.HOME}/.local/bin/uv`;
-const BUGZILLA_MCP_PATH = process.env.BUGZILLA_MCP_PATH || path.resolve(REPO_ROOT, "..", "bugzilla-mcp");
+
+// Locate the bugzilla-mcp clone. Must mirror bz_bridge.find_bugzilla_mcp_path:
+// env var → peer dir → ~/bugzilla-mcp. From a git worktree, `..` resolves to
+// the worktree parent (.claude/worktrees/), so the peer-dir case fails for
+// worktrees — the home-dir fallback rescues that.
+function resolveBugzillaMcpPath(): string {
+  const env = process.env.BUGZILLA_MCP_PATH;
+  if (env) return env;
+  const peer = path.resolve(REPO_ROOT, "..", "bugzilla-mcp");
+  if (existsSync(path.join(peer, ".mcp.json"))) return peer;
+  const home = path.join(process.env.HOME || "", "bugzilla-mcp");
+  if (existsSync(path.join(home, ".mcp.json"))) return home;
+  return peer; // fallback — bz_bridge.py will surface a clear error
+}
+const BUGZILLA_MCP_PATH = resolveBugzillaMcpPath();
 
 interface RunOptions {
   args: string[];           // command-line args to pass to the Python script
@@ -128,17 +143,27 @@ import type {
 } from "./types";
 
 export async function bridgeSearch(opts: {
-  product?: string; component?: string; status?: string;
-  severity?: string; assignee?: string; quicksearch?: string;
+  product?: string; component?: string;
+  // status/severity can be single or multi-value: bucket filters like
+  // "open" or "closed" expand to N statuses; the dropdowns send one each.
+  status?: string | string[];
+  severity?: string | string[];
+  assignee?: string; quicksearch?: string;
+  // YYYY-MM-DD lower bounds for date-window buckets (last 7d filed/closed).
+  createdSince?: string;
+  changedSince?: string;
   limit?: number; offset?: number;
 }): Promise<{ tickets: TicketSummary[]; total: number }> {
   const args: string[] = ["search"];
   if (opts.product) args.push("--product", opts.product);
   if (opts.component) args.push("--component", opts.component);
-  if (opts.status) args.push("--status", opts.status);
-  if (opts.severity) args.push("--severity", opts.severity);
+  const toArr = (v?: string | string[]) => Array.isArray(v) ? v : v ? [v] : [];
+  for (const s of toArr(opts.status)) args.push("--status", s);
+  for (const s of toArr(opts.severity)) args.push("--severity", s);
   if (opts.assignee) args.push("--assignee", opts.assignee);
   if (opts.quicksearch) args.push("--quicksearch", opts.quicksearch);
+  if (opts.createdSince) args.push("--created-since", opts.createdSince);
+  if (opts.changedSince) args.push("--changed-since", opts.changedSince);
   args.push("--limit", String(opts.limit ?? 100));
   args.push("--offset", String(opts.offset ?? 0));
   return runBridge({ script: "bz_bridge", args, timeoutMs: 45_000 });

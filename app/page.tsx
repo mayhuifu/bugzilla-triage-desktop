@@ -1,12 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCw, Database } from "lucide-react";
-import type { TicketSummary, ProductInfo, WhoAmI, DashboardStats } from "@/lib/types";
+import { RefreshCw, Database, X, Plus, Loader2 } from "lucide-react";
+import type {
+  TicketSummary, ProductInfo, WhoAmI, DashboardStats, TicketBucket,
+} from "@/lib/types";
+import { BUCKET_LABELS } from "@/lib/types";
 import { Logo } from "@/components/ui/Logo";
 import { ProductStatus, TrendBar } from "@/components/dashboard/ProductStatus";
 import { TicketFilters, type FilterState } from "@/components/dashboard/TicketFilters";
 import { TicketTable } from "@/components/dashboard/TicketTable";
+
+const DEFAULT_PRODUCT = "U300";
+const PAGE_SIZE = 25;          // initial number of tickets shown
+const PAGE_INCREMENT = 25;     // each "Load more" click
 
 const INITIAL_FILTERS: FilterState = {
   q: "", product: "", component: "", severity: "", status: "", myTickets: false,
@@ -24,17 +31,41 @@ export default function Dashboard() {
   const [source, setSource] = useState<string>("loading");
 
   const [filters, setFilters] = useState<FilterState>(INITIAL_FILTERS);
+  // Clicking a card in ProductStatus sets a bucket which overrides the
+  // severity/status dropdowns server-side. Null = card filter inactive.
+  const [bucket, setBucket] = useState<TicketBucket | null>(null);
+  // Page size for the ticket table. Bumps by PAGE_INCREMENT on "Load more".
+  const [ticketLimit, setTicketLimit] = useState<number>(PAGE_SIZE);
 
-  // Product/component/my-tickets are server-side filters — they change the
-  // population we count over, so they go into the query string. Severity /
-  // status / freetext stay client-side (they narrow the visible table).
+  // ── Server-side scope query ─────────────────────────────────────────
+  // Product/component/my-tickets always go to the server (they change the
+  // population we count over). Bucket also goes server-side and overrides
+  // the severity/status dropdowns. The dropdowns are passed only when no
+  // bucket is active. Freetext stays client-side narrowing.
   const serverQuery = useMemo(() => {
     const qs = new URLSearchParams();
     if (filters.product) qs.set("product", filters.product);
     if (filters.component) qs.set("component", filters.component);
     if (filters.myTickets && whoami?.login) qs.set("assignee", whoami.login);
+    if (bucket) {
+      qs.set("bucket", bucket);
+    } else {
+      if (filters.severity) qs.set("severity", filters.severity);
+      if (filters.status) qs.set("status", filters.status);
+    }
     return qs.toString();
-  }, [filters.product, filters.component, filters.myTickets, whoami?.login]);
+  }, [
+    filters.product, filters.component, filters.myTickets, whoami?.login,
+    bucket, filters.severity, filters.status,
+  ]);
+
+  // Limit is part of the same useEffect trigger but kept separate so we can
+  // distinguish "scope changed → reset to PAGE_SIZE" from "Load more".
+  const ticketQuery = useMemo(() => {
+    const qs = new URLSearchParams(serverQuery);
+    qs.set("limit", String(ticketLimit));
+    return qs.toString();
+  }, [serverQuery, ticketLimit]);
 
   // ── Bootstrap: products + whoami in parallel (one-shot per session) ──
   useEffect(() => {
@@ -44,13 +75,17 @@ export default function Dashboard() {
       fetch("/api/whoami").then(r => r.json()).catch(() => null),
     ]).then(([p, w]) => {
       if (cancelled) return;
-      setProducts(p.products || []);
+      const list: ProductInfo[] = p.products || [];
+      setProducts(list);
+      if (list.some(prod => prod.name === DEFAULT_PRODUCT)) {
+        setFilters(f => f.product ? f : { ...f, product: DEFAULT_PRODUCT });
+      }
       if (w?.login) setWhoami(w);
     });
     return () => { cancelled = true; };
   }, []);
 
-  // ── Tickets + stats refetch whenever the server-side scope changes ───
+  // ── Load tickets when ticketQuery changes ────────────────────────────
   const loadTickets = useCallback(async (qs: string) => {
     setLoadingTickets(true);
     setError(null);
@@ -80,31 +115,31 @@ export default function Dashboard() {
     }
   }, []);
 
+  // When the scope (excluding limit) changes, reset pagination to page 1.
+  // The two effects below split tickets from stats: stats don't paginate.
   useEffect(() => {
-    // Don't fire My-Tickets-scoped queries until whoami has resolved.
     if (filters.myTickets && !whoami?.login) return;
-    loadTickets(serverQuery);
+    setTicketLimit(PAGE_SIZE);
     loadStats(serverQuery);
-  }, [serverQuery, filters.myTickets, whoami?.login, loadTickets, loadStats]);
+  }, [serverQuery, filters.myTickets, whoami?.login, loadStats]);
 
-  // ── Client-side narrowing on the table only (severity/status/q) ──────
+  useEffect(() => {
+    if (filters.myTickets && !whoami?.login) return;
+    loadTickets(ticketQuery);
+  }, [ticketQuery, filters.myTickets, whoami?.login, loadTickets]);
+
+  // ── Client-side narrowing: freetext only (severity/status now server-side)
   const filtered = useMemo(() => {
-    return tickets.filter(t => {
-      if (filters.severity && t.severity !== filters.severity) return false;
-      if (filters.status && t.status !== filters.status) return false;
-      if (filters.q) {
-        const q = filters.q.toLowerCase();
-        if (!(t.summary.toLowerCase().includes(q) ||
-              String(t.id).includes(q) ||
-              t.assignee.toLowerCase().includes(q) ||
-              t.component.toLowerCase().includes(q)))
-          return false;
-      }
-      return true;
-    });
-  }, [tickets, filters.severity, filters.status, filters.q]);
+    if (!filters.q) return tickets;
+    const q = filters.q.toLowerCase();
+    return tickets.filter(t =>
+      t.summary.toLowerCase().includes(q) ||
+      String(t.id).includes(q) ||
+      t.assignee.toLowerCase().includes(q) ||
+      t.component.toLowerCase().includes(q),
+    );
+  }, [tickets, filters.q]);
 
-  // Fallback component list for the dropdown when no product is picked yet.
   const componentsFromLoaded = useMemo(
     () => Array.from(new Set(tickets.map(t => t.component))).sort(),
     [tickets],
@@ -119,9 +154,31 @@ export default function Dashboard() {
   }, [filters.product, filters.component, filters.myTickets, whoami?.login]);
 
   const refreshAll = useCallback(() => {
-    loadTickets(serverQuery);
+    loadTickets(ticketQuery);
     loadStats(serverQuery);
-  }, [serverQuery, loadTickets, loadStats]);
+  }, [ticketQuery, serverQuery, loadTickets, loadStats]);
+
+  // Bucket selection from ProductStatus cards. Clears the severity/status
+  // dropdowns so they don't visually conflict with the active bucket.
+  const handleSelectBucket = useCallback((b: TicketBucket | null) => {
+    setBucket(b);
+    if (b) setFilters(f => ({ ...f, severity: "", status: "" }));
+  }, []);
+
+  // Picking a severity/status from the dropdown clears any active bucket.
+  const handleFiltersChange = useCallback((next: FilterState) => {
+    setFilters(prev => {
+      const dropdownChanged = next.severity !== prev.severity || next.status !== prev.status;
+      if (dropdownChanged && bucket) setBucket(null);
+      return next;
+    });
+  }, [bucket]);
+
+  // Heuristic: if the server returned exactly `ticketLimit` tickets, there
+  // may be more — show Load more. (Bugzilla's /rest/bug doesn't return a
+  // total count.) Filtered count is what the user sees post-freetext.
+  const hasMore = tickets.length >= ticketLimit;
+  const onLoadMore = () => setTicketLimit(l => l + PAGE_INCREMENT);
 
   return (
     <div className="min-h-screen">
@@ -153,7 +210,11 @@ export default function Dashboard() {
             </p>
           </div>
           <div className="text-xs text-slate-500">
-            Showing <span className="text-slate-300 font-medium">{filtered.length}</span> of {tickets.length} tickets
+            Showing <span className="text-slate-300 font-medium">{filtered.length}</span>
+            {filters.q && filtered.length !== tickets.length && (
+              <span> of <span className="text-slate-300">{tickets.length}</span> loaded</span>
+            )}
+            {!filters.q && hasMore && <span className="text-slate-500"> (more available)</span>}
           </div>
         </div>
 
@@ -163,19 +224,67 @@ export default function Dashboard() {
           </div>
         )}
 
-        <ProductStatus stats={stats} loading={loadingStats} scopeLabel={scopeLabel} />
+        <ProductStatus
+          stats={stats}
+          loading={loadingStats}
+          scopeLabel={scopeLabel}
+          activeBucket={bucket}
+          onSelectBucket={handleSelectBucket}
+        />
 
-        <TrendBar stats={stats} loading={loadingStats} />
+        <TrendBar
+          stats={stats}
+          loading={loadingStats}
+          activeBucket={bucket}
+          onSelectBucket={handleSelectBucket}
+        />
 
         <TicketFilters
           state={filters}
-          onChange={setFilters}
+          onChange={handleFiltersChange}
           products={products}
           componentOptions={componentsFromLoaded}
           whoami={whoami}
+          bucketActive={bucket !== null}
         />
 
+        {bucket && (
+          <div className="flex items-center gap-2 text-xs animate-fade-in">
+            <span className="text-slate-500">Filtered by:</span>
+            <button
+              onClick={() => handleSelectBucket(null)}
+              className="badge bg-accent/15 text-accent-glow ring-1 ring-accent/40 hover:bg-accent/25 flex items-center gap-1.5"
+            >
+              {BUCKET_LABELS[bucket]}
+              <X className="w-3 h-3" />
+            </button>
+            <span className="text-slate-600">click again or × to clear</span>
+          </div>
+        )}
+
         <TicketTable tickets={filtered} loading={loadingTickets} />
+
+        {/* Load-more / page-size affordance. Shown when the last fetch
+            saturated the limit. Hidden if a freetext filter is narrowing
+            results client-side (extra results would only appear under the
+            current free-text query, which is confusing). */}
+        {hasMore && !filters.q && (
+          <div className="flex flex-col items-center gap-1.5 py-2">
+            <button
+              onClick={onLoadMore}
+              disabled={loadingTickets}
+              className="btn-secondary text-xs"
+            >
+              {loadingTickets
+                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                : <Plus className="w-3.5 h-3.5" />}
+              Load {PAGE_INCREMENT} more (showing {tickets.length})
+            </button>
+            <div className="text-[10px] text-slate-600">
+              Sorted newest-first · click a status card above to filter
+            </div>
+          </div>
+        )}
 
         <div className="text-center text-[11px] text-slate-600 pt-4 pb-8">
           Workflow:&nbsp;
