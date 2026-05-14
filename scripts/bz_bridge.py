@@ -92,6 +92,12 @@ from requests.adapters import HTTPAdapter
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# WARNING: process-wide monkey-patch of `requests`. Safe here because each
+# invocation of bz_bridge.py is a fresh `uv run` subprocess that exits after
+# emitting one JSON line — there is no long-lived Python process. Do NOT
+# import this module from anywhere persistent (a long-running daemon, a
+# WSGI worker) without replacing this patch with a Session subclass first.
+#
 # Monkey-patch requests.Session.send to add transparent retry on SSL EOF /
 # connection resets — common on internal-VPN-tunneled Bugzilla instances.
 # This applies to skill_fetch / skill_post which also use `requests`.
@@ -133,6 +139,14 @@ BUGZILLA_URL = os.environ.get("BUGZILLA_URL", "")
 API_KEY = os.environ.get("BUGZILLA_API_KEY", "")
 INSECURE = os.environ.get("BUGZILLA_INSECURE", "true").lower() == "true"
 VERIFY = not INSECURE
+
+if INSECURE:
+    # Surface this loudly on every invocation so it can't silently ship to
+    # an environment that should be verifying certs.
+    sys.stderr.write(
+        f"[bz_bridge] WARNING: TLS verification disabled (BUGZILLA_INSECURE=true) "
+        f"for {BUGZILLA_URL or '<unset>'}\n"
+    )
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -394,8 +408,10 @@ def main():
     }
     try:
         out = handlers[args.cmd](args)
+        print("===RESULT===")
         print(json.dumps(out, default=str))
     except Exception as e:
+        print("===RESULT===")
         print(json.dumps({"error": str(e), "type": type(e).__name__}))
         sys.exit(1)
 

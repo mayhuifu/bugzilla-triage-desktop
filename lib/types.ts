@@ -115,8 +115,15 @@ export interface TriageSubmission {
   comment: string;
   isPrivate: boolean;
   transitionTo?: TicketStatus;
+  resolution?: string;
   approverNotes?: string;
 }
+
+export const TICKET_STATUSES: readonly TicketStatus[] = [
+  "NEW", "IN_PROGRESS", "IN_ANALYSIS", "WAITING_FOR_INFO",
+  "ANALYZED", "INTEGRATED", "IN_VERIFICATION",
+  "RESOLVED", "VERIFIED", "CLOSED",
+];
 
 export interface SubmissionReceipt {
   success: boolean;

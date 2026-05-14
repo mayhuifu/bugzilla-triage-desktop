@@ -29,6 +29,28 @@ interface RunOptions {
   timeoutMs?: number;
 }
 
+// Python bridges print `===RESULT===\n{json}` as their final line so we can
+// extract the result deterministically even if late stderr/urllib3 warnings
+// leak into stdout after the JSON.
+const RESULT_SENTINEL = "===RESULT===";
+
+function extractResultJson(stdout: string): unknown | null {
+  const idx = stdout.lastIndexOf(RESULT_SENTINEL);
+  const candidates: string[] = [];
+  if (idx !== -1) {
+    candidates.push(stdout.slice(idx + RESULT_SENTINEL.length).trim());
+  }
+  // Backwards-compat: last non-empty line, then any other line that parses.
+  const lines = stdout.trim().split("\n").map(l => l.trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) candidates.push(lines[i]);
+
+  for (const c of candidates) {
+    if (!c.startsWith("{")) continue;
+    try { return JSON.parse(c); } catch { /* keep scanning */ }
+  }
+  return null;
+}
+
 export async function runBridge<T = unknown>(opts: RunOptions): Promise<T> {
   const scriptPath = path.join(SCRIPTS_DIR, `${opts.script}.py`);
   const cmdArgs = [
@@ -52,40 +74,41 @@ export async function runBridge<T = unknown>(opts: RunOptions): Promise<T> {
 
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const settle = (fn: () => void) => { if (settled) return; settled = true; fn(); };
 
     proc.stdout.on("data", chunk => { stdout += chunk.toString(); });
     proc.stderr.on("data", chunk => { stderr += chunk.toString(); });
 
+    const timeoutMs = opts.timeoutMs || 60_000;
     const timer = setTimeout(() => {
       proc.kill("SIGTERM");
-      reject(new Error(`bridge ${opts.script} timed out after ${opts.timeoutMs || 60000}ms`));
-    }, opts.timeoutMs || 60_000);
+      // Escalate to SIGKILL if the process ignores SIGTERM. Avoids orphaned
+      // uv/python processes when the underlying claude CLI is hung.
+      const killTimer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* dead */ } }, 5_000);
+      killTimer.unref?.();
+      settle(() => reject(new Error(`bridge ${opts.script} timed out after ${timeoutMs}ms`)));
+    }, timeoutMs);
 
     proc.on("close", code => {
       clearTimeout(timer);
-      const lastLine = stdout.trim().split("\n").pop() || "";
-      let parsed: unknown = null;
-      try {
-        parsed = JSON.parse(lastLine);
-      } catch {
-        // fallthrough — error handled below
-      }
+      const parsed = extractResultJson(stdout);
 
       if (code !== 0 || !parsed) {
         const errMsg = `bridge ${opts.script} exit=${code}; stderr: ${stderr.slice(0, 400)}; stdout: ${stdout.slice(0, 400)}`;
-        reject(new Error(errMsg));
+        settle(() => reject(new Error(errMsg)));
         return;
       }
       if (parsed && typeof parsed === "object" && "error" in parsed) {
-        reject(new Error((parsed as { error: string }).error));
+        settle(() => reject(new Error((parsed as { error: string }).error)));
         return;
       }
-      resolve(parsed as T);
+      settle(() => resolve(parsed as T));
     });
 
     proc.on("error", err => {
       clearTimeout(timer);
-      reject(err);
+      settle(() => reject(err));
     });
 
     if (opts.stdin) {
@@ -181,17 +204,25 @@ export interface BridgeConfig {
   validResolutions: string[];
 }
 
+// Success is cached forever (config is static within a process). Errors are
+// cached for a short TTL only — otherwise a transient cold-start failure
+// (VPN coming up, slow uv venv build) would permanently break the app.
+const CONFIG_ERROR_TTL_MS = 30_000;
 let configCache: BridgeConfig | null = null;
-let configCacheError: string | null = null;
+let configCacheError: { message: string; expiresAt: number } | null = null;
 
 export async function getBridgeConfig(): Promise<{ config: BridgeConfig | null; error: string | null }> {
   if (configCache) return { config: configCache, error: null };
-  if (configCacheError) return { config: null, error: configCacheError };
+  if (configCacheError && Date.now() < configCacheError.expiresAt) {
+    return { config: null, error: configCacheError.message };
+  }
   try {
     configCache = await runBridge<BridgeConfig>({ script: "bz_bridge", args: ["config"], timeoutMs: 15_000 });
+    configCacheError = null;
     return { config: configCache, error: null };
   } catch (err) {
-    configCacheError = err instanceof Error ? err.message : String(err);
-    return { config: null, error: configCacheError };
+    const message = err instanceof Error ? err.message : String(err);
+    configCacheError = { message, expiresAt: Date.now() + CONFIG_ERROR_TTL_MS };
+    return { config: null, error: message };
   }
 }

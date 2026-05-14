@@ -18,7 +18,7 @@ export async function POST(
 
   const url = new URL(req.url);
   const explicitMock = url.searchParams.get("mock") === "1";
-  const model = url.searchParams.get("model") || "haiku";
+  const model = url.searchParams.get("model") || undefined;
 
   let ticket;
   try {

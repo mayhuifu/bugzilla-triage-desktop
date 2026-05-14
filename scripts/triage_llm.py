@@ -212,10 +212,42 @@ def build_user_prompt(ticket: dict, followup: str | None = None) -> str:
     return "\n".join(parts)
 
 
+def _extract_json_object(text: str) -> dict | None:
+    """Pull the first valid JSON object out of model output.
+
+    Handles three shapes the model has been observed to emit:
+      1. ```json\n{...}\n```          — preferred, fenced
+      2. ```\n{...}\n```              — bare fence
+      3. Bare {...} mixed with prose  — fallback
+
+    Uses raw_decode to recognize the *first parseable* JSON object starting
+    at each '{' — robust to nested braces and trailing prose, unlike the
+    regex form which can over- or under-match on nested objects.
+    """
+    import re
+    decoder = json.JSONDecoder()
+    # Prefer text inside fences if present, but fall through to whole text.
+    fenced = re.findall(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+    candidates = fenced + [text]
+    for blob in candidates:
+        for i, ch in enumerate(blob):
+            if ch != "{":
+                continue
+            try:
+                obj, _ = decoder.raw_decode(blob[i:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                return obj
+    return None
+
+
 # ── Call the claude CLI ──────────────────────────────────────────────────────
 def run_triage(ticket: dict, followup: str | None = None, *, model: str | None = None, timeout: int = 120) -> dict:
     user_prompt = build_user_prompt(ticket, followup)
 
+    # Pipe the prompt via stdin instead of argv so ticket text — which can
+    # include customer data — is not visible to other users via `ps`.
     cmd = [
         "claude",
         "-p",  # headless print mode
@@ -227,9 +259,8 @@ def run_triage(ticket: dict, followup: str | None = None, *, model: str | None =
     ]
     if model:
         cmd += ["--model", model]
-    cmd.append(user_prompt)
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.run(cmd, input=user_prompt, capture_output=True, text=True, timeout=timeout)
     if proc.returncode != 0:
         raise RuntimeError(
             f"claude CLI failed (exit {proc.returncode}). "
@@ -251,22 +282,9 @@ def run_triage(ticket: dict, followup: str | None = None, *, model: str | None =
     if not result_str:
         raise RuntimeError(f"claude envelope has no result field. envelope keys: {list(envelope.keys())}")
 
-    # Extract the JSON object from ```json … ``` fences in the model's prose
-    import re
-    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", result_str, re.DOTALL)
-    if m:
-        json_blob = m.group(1)
-    else:
-        # Fallback: try to find the first {...} that spans the whole content
-        m = re.search(r"(\{[\s\S]*\})", result_str)
-        if not m:
-            raise RuntimeError(f"no JSON object found in result. result head: {result_str[:300]}")
-        json_blob = m.group(1)
-
-    try:
-        triage_obj = json.loads(json_blob)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"failed to parse JSON from result: {e}; blob head: {json_blob[:300]}")
+    triage_obj = _extract_json_object(result_str)
+    if triage_obj is None:
+        raise RuntimeError(f"no JSON object found in result. result head: {result_str[:300]}")
 
     # Add fields the model doesn't produce
     from datetime import datetime, timezone
@@ -288,8 +306,10 @@ def main():
         ticket_envelope = json.loads(sys.stdin.read())
         ticket = ticket_envelope.get("ticket") or ticket_envelope
         triage = run_triage(ticket, args.followup, model=args.model, timeout=args.timeout)
+        print("===RESULT===")
         print(json.dumps({"triage": triage}))
     except Exception as e:
+        print("===RESULT===")
         print(json.dumps({"error": str(e), "type": type(e).__name__}))
         sys.exit(1)
 
