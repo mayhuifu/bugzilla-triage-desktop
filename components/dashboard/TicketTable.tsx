@@ -5,7 +5,22 @@ import { Sparkles, ExternalLink } from "lucide-react";
 import type { TicketSummary } from "@/lib/types";
 import { SeverityBadge, StatusBadge, SlaIndicator } from "@/components/ui/Badge";
 
-export function TicketTable({ tickets, loading }: { tickets: TicketSummary[]; loading: boolean }) {
+export function TicketTable({
+  tickets,
+  loading,
+  selectedIds,
+  onToggleSelect,
+  onToggleAll,
+}: {
+  tickets: TicketSummary[];
+  loading: boolean;
+  // Optional — when present, renders a checkbox column for bulk actions.
+  // Kept optional so the table also works in views that don't need bulk
+  // (e.g. a future read-only embedded view).
+  selectedIds?: ReadonlySet<number>;
+  onToggleSelect?: (id: number) => void;
+  onToggleAll?: (allSelected: boolean) => void;
+}) {
   if (loading) {
     return (
       <div className="card overflow-hidden">
@@ -35,12 +50,30 @@ export function TicketTable({ tickets, loading }: { tickets: TicketSummary[]; lo
     );
   }
 
+  const selectable = Boolean(selectedIds && onToggleSelect);
+  // "All selected" is computed across the currently rendered rows so the
+  // header checkbox reflects "select / clear visible rows" semantics.
+  const allSelected = selectable && tickets.every(t => selectedIds!.has(t.id));
+  const someSelected = selectable && !allSelected && tickets.some(t => selectedIds!.has(t.id));
+
   return (
     <div className="card overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-bg-border bg-bg-panel/50">
+              {selectable && (
+                <th className="px-3 py-2.5 w-10">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all visible tickets"
+                    checked={allSelected}
+                    ref={el => { if (el) el.indeterminate = someSelected; }}
+                    onChange={() => onToggleAll?.(allSelected)}
+                    className="w-3.5 h-3.5 accent-accent cursor-pointer"
+                  />
+                </th>
+              )}
               <th className="text-left font-medium text-[11px] uppercase tracking-wider text-slate-500 px-4 py-2.5 w-20">ID</th>
               <th className="text-left font-medium text-[11px] uppercase tracking-wider text-slate-500 px-4 py-2.5">Summary</th>
               <th className="text-left font-medium text-[11px] uppercase tracking-wider text-slate-500 px-4 py-2.5">Component</th>
@@ -53,8 +86,26 @@ export function TicketTable({ tickets, loading }: { tickets: TicketSummary[]; lo
             </tr>
           </thead>
           <tbody>
-            {tickets.map(t => (
-              <tr key={t.id} className="border-b border-bg-border/50 hover:bg-bg-hover/40 transition-colors group">
+            {tickets.map(t => {
+              const isSelected = selectable && selectedIds!.has(t.id);
+              return (
+              <tr
+                key={t.id}
+                className={`border-b border-bg-border/50 transition-colors group ${
+                  isSelected ? "bg-accent/10 hover:bg-accent/15" : "hover:bg-bg-hover/40"
+                }`}
+              >
+                {selectable && (
+                  <td className="px-3 py-3">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ticket ${t.id}`}
+                      checked={isSelected}
+                      onChange={() => onToggleSelect!(t.id)}
+                      className="w-3.5 h-3.5 accent-accent cursor-pointer"
+                    />
+                  </td>
+                )}
                 <td className="px-4 py-3 font-mono text-slate-400">#{t.id}</td>
                 <td className="px-4 py-3 max-w-xl">
                   <Link href={`/tickets/${t.id}`} className="text-slate-100 hover:text-accent-glow line-clamp-2 font-medium">
@@ -97,7 +148,8 @@ export function TicketTable({ tickets, loading }: { tickets: TicketSummary[]; lo
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>

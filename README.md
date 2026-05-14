@@ -18,6 +18,8 @@ the same MCP path.
 - **Click any status card** (top row: Open Total / Blocker / Critical, Closed Total / Blocker / Critical) — the ticket table below refetches scoped to that bucket. Click again or use the chip’s × to clear.
 - **Click any trend card** (bottom row: New filed, New filed B+C, Closed, Closed B+C) — same behavior, scoped to tickets that contributed to that 7-day metric.
 - **Last 7 days vs previous 7 days**: each trend card shows Δ and %, color-coded by whether the direction is good or bad for that metric, plus a one-line **trajectory projection** (“Backlog growing · +N/wk (≈ +4N in 4 weeks)” or shrinking/flat).
+- **Saved filters**: click **Filters → Save current filter…** to remember any product/component/bucket/severity/status/search combination by name. Recall with one click; delete from the same menu. Up to 20 saved entries, persisted in browser localStorage.
+- **Bulk AI triage**: tick the checkboxes on individual rows (or the header to toggle all visible rows). A sticky action bar appears showing **N tickets selected · Bulk AI triage**. Click it to launch `/bulk-triage`, which runs the AI on up to **3 tickets in parallel** and shows live per-ticket progress, with one-click handoff to the single-ticket detail page for review and submit.
 - **Pagination**: first 25 tickets by default; **Load 25 more** at the bottom of the table extends as needed.
 - Stats and tickets **auto-refresh** whenever you change product/component/my-tickets/card filter — both panels show a “refreshing” pill while the new query is in flight.
 - Freetext search narrows the visible table client-side without re-querying.
@@ -162,6 +164,7 @@ bugzilla-triage-dashboard/
 │   ├── page.tsx                  # Dashboard (queue + status + trends)
 │   ├── tickets/[id]/page.tsx     # Split layout: ticket context + AI panel,
 │   │                             #   draggable divider, width persisted
+│   ├── bulk-triage/page.tsx      # Bulk AI triage runner (concurrency 3)
 │   └── api/
 │       ├── tickets/route.ts             # GET   /api/tickets (search + bucket)
 │       ├── tickets/[id]/route.ts        # GET   /api/tickets/:id (fetch)
@@ -174,10 +177,12 @@ bugzilla-triage-dashboard/
 ├── lib/
 │   ├── types.ts                  # All types incl. TicketBucket + BUCKET_LABELS
 │   ├── bridge.ts                 # Spawns Python bridges, parses RESULT-sentinel JSON
-│   └── mock-data.ts              # Mock tickets + mockSearch + buildMockStats
+│   ├── mock-data.ts              # Mock tickets + mockSearch + buildMockStats
+│   └── saved-filters.ts          # localStorage-backed per-user filter store
 ├── components/
 │   ├── ui/        Badge, Logo, Toast primitives
-│   ├── dashboard/ ProductStatus (clickable cards), TicketTable, TicketFilters
+│   ├── dashboard/ ProductStatus (clickable cards), TicketTable (with row select),
+│   │              TicketFilters, SavedFilters (bookmark dropdown)
 │   ├── detail/    TicketDetailHeader, Description, Comments, Timeline
 │   └── triage/    TriageChatPanel (chat-style AI workflow), ChatBubble,
 │                  EditableField, StepIndicator
@@ -236,8 +241,7 @@ buckets) date >= bounds.
 ## What's deliberately out of scope
 
 - Authentication — assumes deployed behind corporate SSO / VPN
-- Per-user saved filters
-- Bulk-triage multiple tickets at once
 - Inline rendering of attachment images (filename + size shown; the AI is informed of their presence so it can recommend they be read)
+- Cross-device sync of saved filters (they live in the browser's localStorage; clearing site data forgets them)
 
 These can be added without re-architecting.

@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCw, Database, X, Plus, Loader2 } from "lucide-react";
+import { RefreshCw, Database, X, Plus, Loader2, Sparkles } from "lucide-react";
+import { useRouter } from "next/navigation";
 import type {
   TicketSummary, ProductInfo, WhoAmI, DashboardStats, TicketBucket,
 } from "@/lib/types";
@@ -10,6 +11,7 @@ import { Logo } from "@/components/ui/Logo";
 import { ProductStatus, TrendBar } from "@/components/dashboard/ProductStatus";
 import { TicketFilters, type FilterState } from "@/components/dashboard/TicketFilters";
 import { TicketTable } from "@/components/dashboard/TicketTable";
+import { SavedFilters } from "@/components/dashboard/SavedFilters";
 
 const DEFAULT_PRODUCT = "U300";
 const PAGE_SIZE = 25;          // initial number of tickets shown
@@ -20,6 +22,8 @@ const INITIAL_FILTERS: FilterState = {
 };
 
 export default function Dashboard() {
+  const router = useRouter();
+
   const [tickets, setTickets] = useState<TicketSummary[]>([]);
   const [products, setProducts] = useState<ProductInfo[]>([]);
   const [whoami, setWhoami] = useState<WhoAmI | null>(null);
@@ -31,6 +35,10 @@ export default function Dashboard() {
   const [source, setSource] = useState<string>("loading");
 
   const [filters, setFilters] = useState<FilterState>(INITIAL_FILTERS);
+
+  // Bulk-triage selection — kept as a Set for O(1) membership checks while
+  // rendering the table. Cleared when the user navigates to /bulk-triage.
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
   // Clicking a card in ProductStatus sets a bucket which overrides the
   // severity/status dropdowns server-side. Null = card filter inactive.
   const [bucket, setBucket] = useState<TicketBucket | null>(null);
@@ -180,6 +188,59 @@ export default function Dashboard() {
   const hasMore = tickets.length >= ticketLimit;
   const onLoadMore = () => setTicketLimit(l => l + PAGE_INCREMENT);
 
+  // ── Bulk selection helpers ───────────────────────────────────────────
+  const onToggleSelect = useCallback((id: number) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const onToggleAll = useCallback((allSelected: boolean) => {
+    setSelectedIds(prev => {
+      // Toggle across the currently visible (filtered) rows only.
+      const next = new Set(prev);
+      if (allSelected) {
+        for (const t of filtered) next.delete(t.id);
+      } else {
+        for (const t of filtered) next.add(t.id);
+      }
+      return next;
+    });
+  }, [filtered]);
+
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  const onBulkTriage = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    const ids = Array.from(selectedIds).join(",");
+    router.push(`/bulk-triage?ids=${ids}`);
+  }, [selectedIds, router]);
+
+  // When the underlying ticket list changes (filter change, refresh),
+  // prune selected ids that are no longer visible to avoid stale state.
+  useEffect(() => {
+    if (selectedIds.size === 0) return;
+    const visible = new Set(tickets.map(t => t.id));
+    let changed = false;
+    const next = new Set<number>();
+    for (const id of selectedIds) {
+      if (visible.has(id)) next.add(id); else changed = true;
+    }
+    if (changed) setSelectedIds(next);
+    // Intentionally only react to `tickets` — selectedIds itself shouldn't
+    // re-trigger the pruning pass.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tickets]);
+
+  // ── Saved-filters apply: restore filters + bucket + reset pagination ─
+  const onApplySaved = useCallback((f: FilterState, b: TicketBucket | null) => {
+    setFilters(f);
+    setBucket(b);
+    setTicketLimit(PAGE_SIZE);
+  }, []);
+
   return (
     <div className="min-h-screen">
       <header className="border-b border-bg-border bg-bg-panel/60 backdrop-blur-sm sticky top-0 z-20">
@@ -239,14 +300,23 @@ export default function Dashboard() {
           onSelectBucket={handleSelectBucket}
         />
 
-        <TicketFilters
-          state={filters}
-          onChange={handleFiltersChange}
-          products={products}
-          componentOptions={componentsFromLoaded}
-          whoami={whoami}
-          bucketActive={bucket !== null}
-        />
+        <div className="flex flex-wrap items-stretch gap-2">
+          <div className="flex-1 min-w-[280px]">
+            <TicketFilters
+              state={filters}
+              onChange={handleFiltersChange}
+              products={products}
+              componentOptions={componentsFromLoaded}
+              whoami={whoami}
+              bucketActive={bucket !== null}
+            />
+          </div>
+          <SavedFilters
+            currentFilters={filters}
+            currentBucket={bucket}
+            onApply={onApplySaved}
+          />
+        </div>
 
         {bucket && (
           <div className="flex items-center gap-2 text-xs animate-fade-in">
@@ -262,7 +332,21 @@ export default function Dashboard() {
           </div>
         )}
 
-        <TicketTable tickets={filtered} loading={loadingTickets} />
+        <TicketTable
+          tickets={filtered}
+          loading={loadingTickets}
+          selectedIds={selectedIds}
+          onToggleSelect={onToggleSelect}
+          onToggleAll={onToggleAll}
+        />
+
+        {selectedIds.size > 0 && (
+          <BulkActionBar
+            count={selectedIds.size}
+            onTriage={onBulkTriage}
+            onClear={clearSelection}
+          />
+        )}
 
         {/* Load-more / page-size affordance. Shown when the last fetch
             saturated the limit. Hidden if a freetext filter is narrowing
@@ -296,6 +380,33 @@ export default function Dashboard() {
           <span className="text-emerald-400"> Submit to Bugzilla via MCP</span>
         </div>
       </main>
+    </div>
+  );
+}
+
+// Sticky-bottom bar shown when ≥1 ticket is selected. The dashboard hands
+// off to /bulk-triage which runs the per-ticket AI calls with a concurrency
+// cap; we keep the dashboard view "select-and-launch" only.
+function BulkActionBar({
+  count, onTriage, onClear,
+}: {
+  count: number; onTriage: () => void; onClear: () => void;
+}) {
+  return (
+    <div className="sticky bottom-4 z-30 flex justify-center pointer-events-none">
+      <div className="pointer-events-auto card px-4 py-2.5 flex items-center gap-3 shadow-2xl ring-2 ring-accent/40 bg-bg-panel/95 backdrop-blur-sm animate-fade-in">
+        <div className="text-sm">
+          <span className="text-slate-100 font-medium">{count}</span>
+          <span className="text-slate-400"> ticket{count === 1 ? "" : "s"} selected</span>
+        </div>
+        <button onClick={onTriage} className="btn-primary text-xs">
+          <Sparkles className="w-3.5 h-3.5" />
+          Bulk AI triage
+        </button>
+        <button onClick={onClear} className="btn-ghost text-xs" title="Clear selection">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
     </div>
   );
 }
