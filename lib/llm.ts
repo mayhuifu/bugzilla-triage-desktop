@@ -18,6 +18,7 @@ import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 
 import type { TicketDetail, TriageResult } from "./types";
+import { loadSettings } from "./settings";
 
 // Default to Opus 4.7 per Anthropic guidance — the most capable model for
 // the kind of multi-layer domain reasoning (RF physics, 3GPP specs,
@@ -203,13 +204,15 @@ export async function runTriage(
   ticket: TicketDetail,
   opts: TriageOptions = {},
 ): Promise<TriageResult> {
-  const apiKey = opts.apiKey || process.env.ANTHROPIC_API_KEY;
+  const s = loadSettings();
+  const apiKey = opts.apiKey || s.anthropicApiKey;
   if (!apiKey) {
     throw new Error(
-      "Anthropic API key not configured. Set ANTHROPIC_API_KEY in the environment, " +
-      "or enter one via the dashboard's Settings page.",
+      "Anthropic API key not configured. Open the Settings page (gear icon in the header) " +
+      "and enter your Anthropic API key, then try the triage again.",
     );
   }
+  const model = opts.model || s.defaultModel || DEFAULT_MODEL;
 
   const client = new Anthropic({ apiKey });
   const userPrompt = buildUserPrompt(ticket, opts.followup);
@@ -218,7 +221,7 @@ export async function runTriage(
   // response against the schema server-side, so the first content block
   // is guaranteed to be valid JSON matching TRIAGE_SCHEMA.
   const response = await client.messages.create({
-    model: opts.model || DEFAULT_MODEL,
+    model,
     max_tokens: 8000,
     system: SYSTEM_PROMPT,
     messages: [{ role: "user", content: userPrompt }],
@@ -249,6 +252,6 @@ export async function runTriage(
     ...parsed,
     ticketId: ticket.id,
     generatedAt: new Date().toISOString(),
-    model: response.model || opts.model || DEFAULT_MODEL,
+    model: response.model || model,
   } as TriageResult;
 }
