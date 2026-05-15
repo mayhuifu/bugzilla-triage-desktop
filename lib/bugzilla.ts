@@ -22,6 +22,7 @@ import type {
   ProductInfo, WhoAmI, DashboardStats, Severity,
 } from "./types";
 import { OPEN_STATUSES, CLOSED_STATUSES } from "./types";
+import { loadSettings } from "./settings";
 
 // ── Configuration ─────────────────────────────────────────────────
 
@@ -45,11 +46,14 @@ interface BugzillaConfig {
 }
 
 function readConfig(): BugzillaConfig {
+  // Settings file wins over env vars; the file already merges env as a
+  // fallback for unset fields, so this single source is sufficient.
+  const s = loadSettings();
   return {
-    url: (process.env.BUGZILLA_URL || "").replace(/\/$/, ""),
-    apiKey: process.env.BUGZILLA_API_KEY || "",
-    insecure: (process.env.BUGZILLA_INSECURE || "true").toLowerCase() === "true",
-    login: process.env.BUGZILLA_LOGIN || "",
+    url: (s.bugzillaUrl || "").replace(/\/$/, ""),
+    apiKey: s.bugzillaApiKey,
+    insecure: s.bugzillaInsecure,
+    login: s.bugzillaLogin,
   };
 }
 
@@ -117,7 +121,7 @@ function nodeRequest(
 async function bzGet(path: string, params: Params, timeoutMs = 30_000): Promise<unknown> {
   const cfg = readConfig();
   if (!cfg.url || !cfg.apiKey) {
-    throw new Error("Bugzilla not configured (BUGZILLA_URL / BUGZILLA_API_KEY env vars missing)");
+    throw new Error("Bugzilla not configured — open Settings (gear icon) and enter your URL + API key");
   }
   const url = buildUrl(cfg.url, path, [["api_key", cfg.apiKey], ...params]);
 

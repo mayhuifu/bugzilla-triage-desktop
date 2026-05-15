@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCw, Database, X, Plus, Loader2, Sparkles } from "lucide-react";
+import { RefreshCw, Database, X, Plus, Loader2, Sparkles, Settings as SettingsIcon, AlertCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import type {
   TicketSummary, ProductInfo, WhoAmI, DashboardStats, TicketBucket,
 } from "@/lib/types";
@@ -39,6 +40,11 @@ export default function Dashboard() {
   // Bulk-triage selection — kept as a Set for O(1) membership checks while
   // rendering the table. Cleared when the user navigates to /bulk-triage.
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
+
+  // First-run detection — `null` while we're still checking, `false` if the
+  // user hasn't entered Bugzilla credentials yet (show banner + skip fetches),
+  // `true` once /api/settings reports the connection is configured.
+  const [configured, setConfigured] = useState<boolean | null>(null);
   // Clicking a card in ProductStatus sets a bucket which overrides the
   // severity/status dropdowns server-side. Null = card filter inactive.
   const [bucket, setBucket] = useState<TicketBucket | null>(null);
@@ -78,17 +84,27 @@ export default function Dashboard() {
   // ── Bootstrap: products + whoami in parallel (one-shot per session) ──
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      fetch("/api/products").then(r => r.json()).catch(() => ({ products: [] })),
-      fetch("/api/whoami").then(r => r.json()).catch(() => null),
-    ]).then(([p, w]) => {
+    // Check settings first; if Bugzilla isn't configured, skip the
+    // products/whoami fetches — they'd just 502 against an unset URL.
+    fetch("/api/settings").then(r => r.json()).then((s: { configured: boolean }) => {
       if (cancelled) return;
-      const list: ProductInfo[] = p.products || [];
-      setProducts(list);
-      if (list.some(prod => prod.name === DEFAULT_PRODUCT)) {
-        setFilters(f => f.product ? f : { ...f, product: DEFAULT_PRODUCT });
-      }
-      if (w?.login) setWhoami(w);
+      setConfigured(s.configured);
+      if (!s.configured) return;
+      Promise.all([
+        fetch("/api/products").then(r => r.json()).catch(() => ({ products: [] })),
+        fetch("/api/whoami").then(r => r.json()).catch(() => null),
+      ]).then(([p, w]) => {
+        if (cancelled) return;
+        const list: ProductInfo[] = p.products || [];
+        setProducts(list);
+        if (list.some(prod => prod.name === DEFAULT_PRODUCT)) {
+          setFilters(f => f.product ? f : { ...f, product: DEFAULT_PRODUCT });
+        }
+        if (w?.login) setWhoami(w);
+      });
+    }).catch(() => {
+      // Settings endpoint should never fail; if it does, assume not configured.
+      if (!cancelled) setConfigured(false);
     });
     return () => { cancelled = true; };
   }, []);
@@ -125,16 +141,20 @@ export default function Dashboard() {
 
   // When the scope (excluding limit) changes, reset pagination to page 1.
   // The two effects below split tickets from stats: stats don't paginate.
+  // Both gate on `configured === true` so we don't hit the API on first
+  // run before the user has entered Bugzilla credentials.
   useEffect(() => {
+    if (!configured) return;
     if (filters.myTickets && !whoami?.login) return;
     setTicketLimit(PAGE_SIZE);
     loadStats(serverQuery);
-  }, [serverQuery, filters.myTickets, whoami?.login, loadStats]);
+  }, [configured, serverQuery, filters.myTickets, whoami?.login, loadStats]);
 
   useEffect(() => {
+    if (!configured) return;
     if (filters.myTickets && !whoami?.login) return;
     loadTickets(ticketQuery);
-  }, [ticketQuery, filters.myTickets, whoami?.login, loadTickets]);
+  }, [configured, ticketQuery, filters.myTickets, whoami?.login, loadTickets]);
 
   // ── Client-side narrowing: freetext only (severity/status now server-side)
   const filtered = useMemo(() => {
@@ -253,11 +273,14 @@ export default function Dashboard() {
               </span>
             )}
             <SourceIndicator source={source} />
-            <button onClick={refreshAll} disabled={loadingTickets || loadingStats}
+            <button onClick={refreshAll} disabled={loadingTickets || loadingStats || !configured}
                     className="btn-secondary text-xs py-1.5 px-3">
               <RefreshCw className={`w-3.5 h-3.5 ${(loadingTickets || loadingStats) ? "animate-spin" : ""}`} />
               Refresh
             </button>
+            <Link href="/settings" className="btn-ghost text-xs py-1.5 px-2" title="Settings">
+              <SettingsIcon className="w-3.5 h-3.5" />
+            </Link>
           </div>
         </div>
       </header>
@@ -279,7 +302,30 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {error && (
+        {/* First-run banner — shown until the user enters Bugzilla creds.
+            Replaces the entire dashboard body so we don't fire any fetches
+            that would only error against an unset URL. */}
+        {configured === false && (
+          <div className="card border-amber-500/40 bg-amber-950/20 p-6 flex items-start gap-4 animate-fade-in">
+            <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
+            <div className="flex-1 space-y-2">
+              <div className="text-base text-slate-100 font-medium">
+                Welcome — connect to your Bugzilla to get started
+              </div>
+              <p className="text-sm text-slate-400">
+                The dashboard needs your Bugzilla URL, API key, and login email before it
+                can load tickets. Open Settings to enter them; nothing leaves your machine
+                except direct REST calls to your Bugzilla server.
+              </p>
+              <Link href="/settings" className="btn-primary text-sm inline-flex mt-2">
+                <SettingsIcon className="w-3.5 h-3.5" />
+                Open Settings
+              </Link>
+            </div>
+          </div>
+        )}
+
+        {configured && error && (
           <div className="card border-red-500/30 bg-red-950/20 p-3 text-sm text-red-300 animate-fade-in">
             Backend warning: {error} — falling back to mock data so the demo stays usable.
           </div>
