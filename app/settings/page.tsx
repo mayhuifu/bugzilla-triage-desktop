@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   Save, Eye, EyeOff, CheckCircle2, AlertCircle, Loader2, ArrowLeft,
-  Database, Bot, Lock,
+  Database, Bot, Lock, Zap,
 } from "lucide-react";
 import { Logo } from "@/components/ui/Logo";
 
@@ -35,6 +35,12 @@ export default function SettingsPage() {
   const [errors, setErrors] = useState<string[]>([]);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
+  // "Test connection" result. null = idle; otherwise the latest outcome.
+  // We DON'T clear this on field edits — useful for the user to compare
+  // "this used to work" against the new state.
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
   // Form state. API keys default to empty — the "(saved)" indicator is
   // sourced from `view.hasFooKey` not from the input value.
   const [bugzillaUrl, setBugzillaUrl] = useState("");
@@ -59,6 +65,26 @@ export default function SettingsPage() {
       })
       .finally(() => setLoading(false));
   }, []);
+
+  // Test the Bugzilla connection without saving. Useful before commit so
+  // the user can iterate on a wrong URL/key without persisting each try.
+  const onTest = useCallback(async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await fetch("/api/settings/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bugzillaUrl, bugzillaApiKey, bugzillaInsecure }),
+      });
+      const data = await res.json();
+      setTestResult({ ok: Boolean(data.ok), message: data.message || "Unknown result" });
+    } catch (err) {
+      setTestResult({ ok: false, message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setTesting(false);
+    }
+  }, [bugzillaUrl, bugzillaApiKey, bugzillaInsecure]);
 
   const onSave = useCallback(async () => {
     setSaving(true);
@@ -202,6 +228,35 @@ export default function SettingsPage() {
                   </div>
                 </div>
               </label>
+
+              {/* Test connection — runs without saving so the user can
+                  iterate on credentials without committing each attempt. */}
+              <div className="pt-2 border-t border-bg-border/40 space-y-2">
+                <button
+                  onClick={onTest}
+                  disabled={testing || !bugzillaUrl}
+                  className="btn-secondary text-xs"
+                  type="button"
+                >
+                  {testing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+                  {testing ? "Testing…" : "Test connection"}
+                </button>
+                {testResult && (
+                  <div
+                    role="status"
+                    className={`text-xs flex items-start gap-2 rounded-md p-2.5 ${
+                      testResult.ok
+                        ? "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30"
+                        : "bg-red-500/10 text-red-300 ring-1 ring-red-500/30"
+                    }`}
+                  >
+                    {testResult.ok
+                      ? <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                      : <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />}
+                    <span className="break-words">{testResult.message}</span>
+                  </div>
+                )}
+              </div>
             </section>
 
             {/* ── AI Triage section (optional) ───────────────── */}
