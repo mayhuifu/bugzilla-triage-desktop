@@ -1,12 +1,17 @@
 {
-  "name": "bugzilla-ai-triage-dashboard",
+  "name": "bugzilla-triage-desktop",
+  "productName": "Bugzilla AI Triage",
   "version": "0.1.0",
   "private": true,
+  "description": "Standalone Windows app for AI-assisted Bugzilla triage. Sister product to bugzilla-triage-dashboard (the original Claude Code CLI version).",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "dev:electron": "concurrently -k -n next,electron -c blue,magenta \"npm:dev\" \"wait-on http://localhost:3000 && ELECTRON_DEV=1 electron .\"",
+    "build:electron": "next build"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
@@ -20,8 +25,11 @@
     "@types/react": "^19.0.1",
     "@types/react-dom": "^19.0.2",
     "autoprefixer": "^10.4.20",
+    "concurrently": "^9.2.1",
+    "electron": "^42.1.0",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "wait-on": "^9.0.10"
   }
 }
