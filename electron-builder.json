@@ -1,0 +1,72 @@
+{
+  "appId": "com.umsemi.bugzilla-triage-desktop",
+  "productName": "Bugzilla AI Triage",
+  "copyright": "Copyright © 2026",
+
+  "directories": {
+    "output": "dist"
+  },
+  "compression": "maximum",
+  "asar": true,
+
+  "files": [
+    "electron/**/*",
+    "package.json"
+  ],
+
+  "extraResources": [
+    {
+      "from": ".next/standalone",
+      "to": "app/.next/standalone",
+      "filter": ["**/*"]
+    },
+    {
+      "from": ".next/static",
+      "to": "app/.next/standalone/.next/static",
+      "filter": ["**/*"]
+    }
+  ],
+
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "build/icon.png",
+    "artifactName": "Bugzilla-AI-Triage-Setup-${version}.${ext}"
+  },
+
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Bugzilla AI Triage"
+  },
+
+  "mac": {
+    "target": [
+      {
+        "target": "dmg",
+        "arch": ["arm64", "x64"]
+      }
+    ],
+    "icon": "build/icon.png",
+    "category": "public.app-category.developer-tools",
+    "artifactName": "Bugzilla-AI-Triage-${version}-${arch}.${ext}"
+  },
+
+  "linux": {
+    "target": [
+      {
+        "target": "AppImage",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "build/icon.png",
+    "category": "Development"
+  }
+}
