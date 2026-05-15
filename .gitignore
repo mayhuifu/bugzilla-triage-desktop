@@ -1,6 +1,9 @@
 node_modules/
 .next/
 tsconfig.tsbuildinfo
+# electron-builder output — installers can be 100+ MB each, shipped via
+# GitHub Releases (see .github/workflows/release.yml), not via git.
+dist/
 .env
 .env.local
 .env*.local

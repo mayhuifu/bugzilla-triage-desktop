@@ -11,7 +11,11 @@
     "start": "next start",
     "lint": "next lint",
     "dev:electron": "concurrently -k -n next,electron -c blue,magenta \"npm:dev\" \"wait-on http://localhost:3000 && ELECTRON_DEV=1 electron .\"",
-    "build:electron": "next build"
+    "build:electron": "next build",
+    "dist:win": "next build && electron-builder --win --x64 --publish=never",
+    "dist:mac": "next build && electron-builder --mac --publish=never",
+    "dist:linux": "next build && electron-builder --linux --publish=never",
+    "dist:dir": "next build && electron-builder --dir --publish=never"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
@@ -27,6 +31,7 @@
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.2.1",
     "electron": "^42.1.0",
+    "electron-builder": "^26.8.1",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2",
