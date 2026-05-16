@@ -67,13 +67,17 @@ export async function POST(
   }
 
   try {
-    // The Python skill auto-applies the "Analyzed by Claude:" prefix and
-    // the "Analyzed by Claude" cf_label per umsemi conventions.
+    // For AI triage: the submit() helper auto-applies the
+    // "Analyzed by Claude:" prefix and the "Analyzed by Claude" cf_label
+    // per umsemi conventions. For manual triage (submission.manual===true)
+    // both are skipped so we don't misattribute human-authored comments
+    // to Claude.
     const receipt = await bridgeSubmit({
       id: ticketId,
       comment: submission.comment,
       transitionTo: submission.transitionTo,
       resolution: submission.resolution,
+      manual: submission.manual === true,
     });
     return NextResponse.json(receipt);
   } catch (err) {

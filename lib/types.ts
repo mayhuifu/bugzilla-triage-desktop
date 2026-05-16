@@ -117,6 +117,11 @@ export interface TriageSubmission {
   transitionTo?: TicketStatus;
   resolution?: string;
   approverNotes?: string;
+  /** True when the comment was authored by a human in the manual-triage
+   *  flow. When set, the submit path skips the "Analyzed by Claude:"
+   *  prefix and skips appending the "Analyzed by Claude" cf_label — both
+   *  belong to AI-authored comments only. */
+  manual?: boolean;
 }
 
 export const TICKET_STATUSES: readonly TicketStatus[] = [

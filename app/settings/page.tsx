@@ -17,16 +17,30 @@ import { Logo } from "@/components/ui/Logo";
 // only — never the raw key. Leaving an input blank on save preserves
 // the existing stored value (handled server-side).
 
+type LlmProvider = "anthropic" | "openai-compatible";
+
 interface SettingsView {
   bugzillaUrl: string;
   bugzillaInsecure: boolean;
   bugzillaLogin: string;
+  llmProvider: LlmProvider;
+  llmBaseUrl: string;
   defaultModel: string;
   hasBugzillaApiKey: boolean;
   hasAnthropicApiKey: boolean;
   filePath: string;
   configured: boolean;
 }
+
+// Known Anthropic models that get their own dropdown entries. Anything else
+// falls into "Custom…" with a free-text input — needed for OpenAI-compatible
+// providers (gpt-4o, qwen2.5, deepseek-r1, …) and for proxies that rename
+// models.
+const KNOWN_MODELS = [
+  "claude-opus-4-7",
+  "claude-sonnet-4-6",
+  "claude-haiku-4-5",
+] as const;
 
 export default function SettingsPage() {
   const [view, setView] = useState<SettingsView | null>(null);
@@ -52,6 +66,13 @@ export default function SettingsPage() {
   const [showBugzillaKey, setShowBugzillaKey] = useState(false);
   const [showAnthropicKey, setShowAnthropicKey] = useState(false);
 
+  // LLM provider + base URL. modelMode tracks whether the dropdown is on a
+  // known Anthropic model or on "custom" (in which case a free-text input
+  // is shown for `defaultModel`).
+  const [llmProvider, setLlmProvider] = useState<LlmProvider>("anthropic");
+  const [llmBaseUrl, setLlmBaseUrl] = useState("");
+  const [modelMode, setModelMode] = useState<"known" | "custom">("known");
+
   // Initial load.
   useEffect(() => {
     fetch("/api/settings")
@@ -61,10 +82,33 @@ export default function SettingsPage() {
         setBugzillaUrl(v.bugzillaUrl);
         setBugzillaInsecure(v.bugzillaInsecure);
         setBugzillaLogin(v.bugzillaLogin);
+        setLlmProvider(v.llmProvider);
+        setLlmBaseUrl(v.llmBaseUrl);
         setDefaultModel(v.defaultModel);
+        // If the stored model isn't a known Anthropic preset, drop the
+        // dropdown into "custom" mode so the user sees what's persisted.
+        setModelMode(
+          (KNOWN_MODELS as readonly string[]).includes(v.defaultModel) ? "known" : "custom",
+        );
       })
       .finally(() => setLoading(false));
   }, []);
+
+  // When the user flips the provider, auto-switch the model picker into
+  // custom-text mode for openai-compatible (since the Anthropic presets
+  // don't apply). Going back to Anthropic leaves whatever they had.
+  const onProviderChange = useCallback((next: LlmProvider) => {
+    setLlmProvider(next);
+    if (next === "openai-compatible") {
+      setModelMode("custom");
+      // Clear the Anthropic preset if it's still there — the user almost
+      // certainly doesn't want to send "claude-opus-4-7" to a non-Anthropic
+      // endpoint. Leave the field empty so they type the right name.
+      if ((KNOWN_MODELS as readonly string[]).includes(defaultModel)) {
+        setDefaultModel("");
+      }
+    }
+  }, [defaultModel]);
 
   // Test the Bugzilla connection without saving. Useful before commit so
   // the user can iterate on a wrong URL/key without persisting each try.
@@ -95,7 +139,7 @@ export default function SettingsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           bugzillaUrl, bugzillaApiKey, bugzillaInsecure, bugzillaLogin,
-          anthropicApiKey, defaultModel,
+          llmProvider, llmBaseUrl, anthropicApiKey, defaultModel,
         }),
       });
       const data = await res.json();
@@ -114,7 +158,7 @@ export default function SettingsPage() {
     }
   }, [
     bugzillaUrl, bugzillaApiKey, bugzillaInsecure, bugzillaLogin,
-    anthropicApiKey, defaultModel,
+    llmProvider, llmBaseUrl, anthropicApiKey, defaultModel,
   ]);
 
   return (
@@ -271,18 +315,59 @@ export default function SettingsPage() {
                 )}
               </div>
               <p className="text-xs text-slate-500">
-                The dashboard works without this. Add an Anthropic API key only if you want
-                the AI triage panel on ticket detail pages. Get one at{" "}
+                The dashboard works without this. Add a provider + API key here if you want
+                the AI triage panel on ticket detail pages. Anthropic users can get a key at{" "}
                 <a href="https://console.anthropic.com" target="_blank" rel="noreferrer"
                    className="text-accent-glow hover:underline">console.anthropic.com</a>.
               </p>
 
               <Field
-                label="Anthropic API key"
+                label="Provider"
+                hint={
+                  llmProvider === "anthropic"
+                    ? "Calls api.anthropic.com directly using the @anthropic-ai/sdk."
+                    : "Calls a custom OpenAI-compatible endpoint (Azure, LiteLLM proxy, Ollama, OpenRouter, vLLM, …)."
+                }
+              >
+                <select
+                  className="input"
+                  value={llmProvider}
+                  onChange={e => onProviderChange(e.target.value as LlmProvider)}
+                >
+                  <option value="anthropic">Anthropic (default)</option>
+                  <option value="openai-compatible">OpenAI-compatible (custom URL)</option>
+                </select>
+              </Field>
+
+              <Field
+                label={llmProvider === "anthropic" ? "API base URL (optional)" : "API base URL"}
+                hint={
+                  llmProvider === "anthropic"
+                    ? "Leave blank for the default https://api.anthropic.com. Set this only if you route through a corporate proxy or Anthropic-compatible gateway."
+                    : "Required. The /v1 endpoint of your provider — e.g. https://api.openai.com/v1, https://api.openrouter.ai/api/v1, http://localhost:11434/v1 (Ollama)."
+                }
+              >
+                <input
+                  type="url"
+                  className="input"
+                  value={llmBaseUrl}
+                  onChange={e => setLlmBaseUrl(e.target.value)}
+                  placeholder={
+                    llmProvider === "anthropic"
+                      ? "https://api.anthropic.com"
+                      : "https://api.openai.com/v1"
+                  }
+                />
+              </Field>
+
+              <Field
+                label={llmProvider === "anthropic" ? "Anthropic API key" : "API key"}
                 hint={
                   view.hasAnthropicApiKey
                     ? "Leave blank to keep the stored key. Type to replace it."
-                    : "Starts with sk-ant-…"
+                    : llmProvider === "anthropic"
+                      ? "Starts with sk-ant-…"
+                      : "Provider-specific (sk-…, opaque proxy token, etc.)"
                 }
                 rightHint={view.hasAnthropicApiKey ? "(saved)" : undefined}
               >
@@ -292,7 +377,11 @@ export default function SettingsPage() {
                     className="input pr-9"
                     value={anthropicApiKey}
                     onChange={e => setAnthropicApiKey(e.target.value)}
-                    placeholder={view.hasAnthropicApiKey ? "•••••••••••••••••••••••" : "sk-ant-…"}
+                    placeholder={
+                      view.hasAnthropicApiKey
+                        ? "•••••••••••••••••••••••"
+                        : llmProvider === "anthropic" ? "sk-ant-…" : "sk-… or proxy token"
+                    }
                     autoComplete="off"
                     spellCheck={false}
                   />
@@ -307,16 +396,44 @@ export default function SettingsPage() {
                 </div>
               </Field>
 
-              <Field label="Default model" hint="Anthropic model ID used by the triage step.">
-                <select
-                  className="input"
-                  value={defaultModel}
-                  onChange={e => setDefaultModel(e.target.value)}
-                >
-                  <option value="claude-opus-4-7">claude-opus-4-7 — most capable</option>
-                  <option value="claude-sonnet-4-6">claude-sonnet-4-6 — balanced</option>
-                  <option value="claude-haiku-4-5">claude-haiku-4-5 — fastest, cheapest</option>
-                </select>
+              <Field
+                label="Default model"
+                hint={
+                  modelMode === "custom"
+                    ? "Free-text model ID — must match a model your provider exposes."
+                    : "Anthropic model ID used by the triage step."
+                }
+              >
+                <div className="space-y-2">
+                  <select
+                    className="input"
+                    value={modelMode === "custom" ? "__custom__" : defaultModel}
+                    onChange={e => {
+                      if (e.target.value === "__custom__") {
+                        setModelMode("custom");
+                      } else {
+                        setModelMode("known");
+                        setDefaultModel(e.target.value);
+                      }
+                    }}
+                  >
+                    <option value="claude-opus-4-7">claude-opus-4-7 — most capable</option>
+                    <option value="claude-sonnet-4-6">claude-sonnet-4-6 — balanced</option>
+                    <option value="claude-haiku-4-5">claude-haiku-4-5 — fastest, cheapest</option>
+                    <option value="__custom__">Custom…</option>
+                  </select>
+                  {modelMode === "custom" && (
+                    <input
+                      type="text"
+                      className="input"
+                      value={defaultModel}
+                      onChange={e => setDefaultModel(e.target.value)}
+                      placeholder="e.g. gpt-4o-mini, qwen2.5-coder:32b, deepseek-r1"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  )}
+                </div>
               </Field>
             </section>
 

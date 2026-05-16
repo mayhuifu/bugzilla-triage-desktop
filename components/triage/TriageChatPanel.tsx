@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Sparkles, Send, Loader2, ShieldCheck, Lock, AlertTriangle, RefreshCw,
   ListChecks, Lightbulb, MessageCircleQuestion, AlertOctagon, FileText,
+  Pencil,
 } from "lucide-react";
 import type { TriageResult, TicketStatus, SubmissionReceipt } from "@/lib/types";
 import { ConfidenceBadge } from "@/components/ui/Badge";
@@ -25,9 +26,31 @@ interface ChatTurn {
   kind: "ticket-loaded" | "ai-thinking" | "ai-classification" | "ai-rootcauses"
        | "ai-missing-info" | "ai-next-steps" | "ai-escalation" | "ai-internal-summary"
        | "ai-customer-summary" | "ai-comment-draft" | "user-followup" | "ai-error"
-       | "approval-card" | "success-receipt" | "system";
+       | "approval-card" | "manual-card" | "success-receipt" | "system";
   data?: Record<string, unknown>;
   time: string;
+}
+
+/** Seed for the manual-triage flow. The submit endpoint only reads
+ *  bugzillaComment, so the other fields stay empty/zero — they're never
+ *  rendered in manual mode. */
+function emptyManualTriage(ticketId: number): TriageResult {
+  return {
+    ticketId,
+    generatedAt: new Date().toISOString(),
+    model: "manual",
+    confidence: "medium",
+    domain: "",
+    specReferences: [],
+    issueSummary: "",
+    rootCauses: [],
+    missingInformation: [],
+    nextSteps: [],
+    escalationRecommendation: "",
+    internalSummary: "",
+    customerSummary: "",
+    bugzillaComment: "",
+  };
 }
 
 export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotriage }: Props) {
@@ -41,6 +64,11 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
   const [isPrivate, setIsPrivate] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [receipt, setReceipt] = useState<SubmissionReceipt | null>(null);
+  // Workflow mode: "ai" runs the LLM and produces the full structured chain;
+  // "manual" drops the user straight into a comment-textarea + approve+submit
+  // card with no LLM call (no API key required, no "Analyzed by Claude" prefix
+  // or label applied on submit). null = user hasn't picked yet.
+  const [mode, setMode] = useState<"ai" | "manual" | null>(null);
   const autoRanRef = useRef(false);
   const endRef = useRef<HTMLDivElement>(null);
   const turnSeqRef = useRef(0);
@@ -55,10 +83,9 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
   // Initial "ticket loaded" turn
   useEffect(() => {
     addTurn({ kind: "ticket-loaded", data: { ticketId, summary: ticketSummary } });
-    // Suggest triage
     addTurn({
       kind: "system",
-      data: { text: "Ready to draft AI triage" },
+      data: { text: "Pick AI triage or write your own analysis manually below" },
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticketId]);
@@ -92,10 +119,14 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
   // ── Actions ────────────────────────────────────────────────────
   async function runTriage() {
     if (loading) return;
+    setMode("ai");
     setLoading(true);
     setApproved(false);
     setReceipt(null);
     setTriage(null);
+    // If we're switching from manual mode, drop the manual-card turn — the
+    // structured AI turns will replace it once the response lands.
+    setTurns(prev => prev.filter(t => t.kind !== "manual-card"));
     addTurn({ kind: "ai-thinking", data: { stage: "classifying" } });
 
     try {
@@ -117,6 +148,19 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
     } finally {
       setLoading(false);
     }
+  }
+
+  function startManual() {
+    setMode("manual");
+    setApproved(false);
+    setReceipt(null);
+    setTriage(emptyManualTriage(ticketId));
+    // Reset to just the initial system turns + the manual card. Avoids
+    // stale AI turns hanging around if the user ran AI first then switched.
+    setTurns(prev => [
+      ...prev.filter(t => t.kind === "ticket-loaded" || t.kind === "system"),
+    ]);
+    addTurn({ kind: "manual-card" });
   }
 
   function applyTriageToChat(t: TriageResult, refined: boolean) {
@@ -173,8 +217,13 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
 
   async function submit() {
     if (!triage || !approved || submitting) return;
+    if (!triage.bugzillaComment.trim()) return;
+    const isManual = mode === "manual";
     setSubmitting(true);
-    addTurn({ kind: "system", data: { text: "Submitting to Bugzilla via MCP…" } });
+    addTurn({
+      kind: "system",
+      data: { text: isManual ? "Submitting manual triage to Bugzilla…" : "Submitting to Bugzilla…" },
+    });
     try {
       const res = await fetch(`/api/tickets/${ticketId}/submit`, {
         method: "POST",
@@ -183,13 +232,18 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
           comment: triage.bugzillaComment,
           isPrivate,
           transitionTo: transitionTo !== ticketStatus ? transitionTo : undefined,
+          manual: isManual,
         }),
       });
       const data: SubmissionReceipt = await res.json();
       setReceipt(data);
       if (data.success) {
         addTurn({ kind: "success-receipt", data: { receipt: data } });
-        pushToast("success", "Submitted via MCP", `Comment #${data.commentId} posted.`);
+        pushToast(
+          "success",
+          isManual ? "Manual triage posted" : "AI triage posted",
+          `Comment #${data.commentId} posted.`,
+        );
       } else {
         addTurn({ kind: "ai-error", data: { msg: data.message } });
         pushToast("error", "Submission failed", data.message);
@@ -460,6 +514,100 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
           </ChatBubble>
         );
 
+      case "manual-card":
+        return triage && (
+          <ChatBubble
+            key={turn.id} role="user" time={turn.time}
+            title="Manual triage"
+            subtitle="Write your analysis. No AI is invoked; the comment is posted as-typed (no &quot;Analyzed by Claude&quot; prefix or label)."
+            highlight={!approved && !receipt}
+          >
+            <div className="space-y-3">
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">
+                  Bugzilla comment
+                </div>
+                <EditableTextarea
+                  value={triage.bugzillaComment}
+                  onChange={v => updateTriage({ bugzillaComment: v })}
+                  rows={12}
+                  className="font-mono text-xs"
+                  placeholder={
+                    "OBSERVED:\n  - …\n\nINFERRED:\n  - …\n\nHYPOTHESIS:\n  H1 …\n\nNEXT STEPS:\n  - owner: …\n    action: …\n    pass/fail: …"
+                  }
+                />
+                <div className="mt-1 text-[10px] text-slate-500 text-right">
+                  {triage.bugzillaComment.length} chars
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">
+                    Transition to
+                  </div>
+                  <select
+                    value={transitionTo}
+                    onChange={e => setTransitionTo(e.target.value as TicketStatus)}
+                    className="input text-xs"
+                  >
+                    <option value={ticketStatus}>{ticketStatus} (no change)</option>
+                    <option value="IN_ANALYSIS">IN_ANALYSIS</option>
+                    <option value="IN_PROGRESS">IN_PROGRESS</option>
+                    <option value="WAITING_FOR_INFO">WAITING_FOR_INFO</option>
+                    <option value="ANALYZED">ANALYZED</option>
+                  </select>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">
+                    Visibility
+                  </div>
+                  <button
+                    onClick={() => setIsPrivate(!isPrivate)}
+                    className={`input flex items-center justify-center gap-2 text-xs ${isPrivate ? "text-amber-300" : "text-slate-300"}`}
+                  >
+                    <Lock className="w-3 h-3" />
+                    {isPrivate ? "Private" : "Public"}
+                  </button>
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2 cursor-pointer select-none p-2 rounded-md bg-bg-panel/60 hover:bg-bg-panel border border-bg-border/40">
+                <input
+                  type="checkbox"
+                  checked={approved}
+                  onChange={e => setApproved(e.target.checked)}
+                  className="w-4 h-4 accent-emerald-500"
+                />
+                <ShieldCheck className={`w-4 h-4 ${approved ? "text-emerald-400" : "text-slate-500"}`} />
+                <span className="text-xs text-slate-200">
+                  I have reviewed the comment and approve posting
+                </span>
+              </label>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={submit}
+                  disabled={!approved || submitting || !!receipt || !triage.bugzillaComment.trim()}
+                  className="btn-success flex-1 justify-center text-sm"
+                >
+                  {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                  {submitting ? "Posting…" : "Submit to Bugzilla"}
+                </button>
+                <button
+                  onClick={runTriage}
+                  disabled={loading || submitting || !!receipt}
+                  className="btn-ghost text-xs whitespace-nowrap"
+                  title="Discard the manual draft and let AI write it instead"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Use AI instead
+                </button>
+              </div>
+            </div>
+          </ChatBubble>
+        );
+
       case "success-receipt":
         const r = turn.data?.receipt as SubmissionReceipt | undefined;
         return r && (
@@ -489,8 +637,12 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
             <Sparkles className="w-4 h-4 text-white" strokeWidth={2.5} />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold text-slate-100">AI Triage Workflow</div>
-            <div className="text-[10px] text-slate-500">Chat-style step-by-step · human approval required</div>
+            <div className="text-sm font-semibold text-slate-100">Triage Workflow</div>
+            <div className="text-[10px] text-slate-500">
+              {mode === "manual"
+                ? "Manual mode · human-authored · no AI invoked"
+                : "AI or manual · human approval required before posting"}
+            </div>
           </div>
           {triage && !receipt && (
             <button onClick={runTriage} disabled={loading} className="btn-ghost text-xs py-1 px-2" title="Re-run from scratch">
@@ -506,11 +658,28 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
         {turns.map(renderTurn)}
 
         {!triage && !loading && (
-          <div className="flex justify-center">
-            <button onClick={runTriage} className="btn-primary text-sm shadow-[0_0_30px_-6px_rgba(168,85,247,0.4)]">
-              <Sparkles className="w-4 h-4" />
-              Run AI Triage
-            </button>
+          <div className="flex flex-col items-center gap-2 py-2">
+            <div className="flex flex-wrap justify-center gap-2">
+              <button
+                onClick={runTriage}
+                className="btn-primary text-sm shadow-[0_0_30px_-6px_rgba(168,85,247,0.4)]"
+              >
+                <Sparkles className="w-4 h-4" />
+                Run AI Triage
+              </button>
+              <button
+                onClick={startManual}
+                className="btn-secondary text-sm"
+                title="Skip the AI — write your own analysis and post directly to Bugzilla"
+              >
+                <Pencil className="w-4 h-4" />
+                Manual Triage
+              </button>
+            </div>
+            <div className="text-[10px] text-slate-500 text-center max-w-xs">
+              <span className="text-fuchsia-300">AI</span> drafts the structured analysis ·{" "}
+              <span className="text-slate-300">Manual</span> lets you type the comment yourself
+            </div>
           </div>
         )}
 
@@ -529,16 +698,20 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
                 sendFollowup();
               }
             }}
-            placeholder={triage
-              ? "Refine the analysis… e.g. 'focus on warm-restart path' (⌘+Enter)"
-              : "Run triage first, then refine with follow-up instructions here…"}
-            disabled={!triage || followupLoading}
+            placeholder={
+              mode === "manual"
+                ? "Refinement is AI-only. Edit the comment directly above, or click 'Use AI instead' to switch."
+                : triage
+                  ? "Refine the analysis… e.g. 'focus on warm-restart path' (⌘+Enter)"
+                  : "Run AI triage first, then refine with follow-up instructions here…"
+            }
+            disabled={!triage || followupLoading || mode === "manual"}
             rows={2}
             className="input flex-1 text-xs resize-none disabled:opacity-50"
           />
           <button
             onClick={sendFollowup}
-            disabled={!followupText.trim() || followupLoading || !triage}
+            disabled={!followupText.trim() || followupLoading || !triage || mode === "manual"}
             className="btn-primary py-2 px-3 shrink-0"
             title="Refine (⌘+Enter)"
           >
@@ -548,7 +721,7 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
         {!triage && !loading && (
           <div className="flex items-center gap-1.5 mt-1.5 text-[10px] text-slate-500">
             <AlertTriangle className="w-3 h-3 text-amber-400" />
-            Every AI draft is reviewed and approved by you before anything is written to Bugzilla.
+            Nothing is written to Bugzilla until you review and approve it below.
           </div>
         )}
       </div>
