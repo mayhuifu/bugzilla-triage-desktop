@@ -1,21 +1,33 @@
 // ─────────────────────────────────────────────────────────────────
-// LLM triage — direct Anthropic SDK call.
+// LLM triage — Anthropic SDK or OpenAI-compatible SDK.
 //
 // Replaces scripts/triage_llm.py. The Python version spawned the user's
 // local `claude` CLI in headless mode, so it depended on Claude Code being
 // installed and authenticated. The standalone Electron app can't assume
-// that — non-technical users won't have a Claude Code subscription. So we
-// take a user-provided Anthropic API key (entered via /settings in
-// milestone 3) and call the API directly with @anthropic-ai/sdk.
+// that — non-technical users won't have a Claude Code subscription.
 //
-// Schema-enforced output: output_config.format with json_schema makes
-// Anthropic validate the response against the schema server-side, so we
-// don't need the brittle regex extraction the Python version used to pull
-// JSON out of fenced markdown blocks.
+// Two provider paths (selected via Settings → AI triage → Provider):
+//
+//   1. "anthropic"          — @anthropic-ai/sdk + output_config.format with
+//                             json_schema, so Anthropic validates the
+//                             response against the schema server-side.
+//                             baseURL is optional (defaults to the
+//                             Anthropic API endpoint).
+//
+//   2. "openai-compatible"  — openai SDK pointed at a user-supplied baseURL
+//                             (LiteLLM, Azure, Ollama, OpenAI, OpenRouter,
+//                             vLLM, etc.). Uses response_format json_schema
+//                             with strict:true to keep the same parsing
+//                             contract.
+//
+// IMPORTANT: each provider path uses ONLY its native SDK. We never call
+// the OpenAI SDK against Anthropic's endpoint or vice-versa — the two
+// branches are fully separated below.
 // ─────────────────────────────────────────────────────────────────
 
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 
 import type { TicketDetail, TriageResult } from "./types";
 import { loadSettings } from "./settings";
@@ -208,14 +220,34 @@ export async function runTriage(
   const apiKey = opts.apiKey || s.anthropicApiKey;
   if (!apiKey) {
     throw new Error(
-      "Anthropic API key not configured. Open the Settings page (gear icon in the header) " +
-      "and enter your Anthropic API key, then try the triage again.",
+      "LLM API key not configured. Open the Settings page (gear icon in the header) " +
+      "and enter the API key for your selected provider, then try the triage again.",
     );
   }
   const model = opts.model || s.defaultModel || DEFAULT_MODEL;
-
-  const client = new Anthropic({ apiKey });
+  const baseURL = s.llmBaseUrl?.trim() || undefined;
   const userPrompt = buildUserPrompt(ticket, opts.followup);
+
+  const common = { apiKey, baseURL, model, userPrompt, ticketId: ticket.id };
+  if (s.llmProvider === "openai-compatible") {
+    return runTriageOpenAI(common);
+  }
+  return runTriageAnthropic(common);
+}
+
+// ── Anthropic path ────────────────────────────────────────────────
+
+interface ProviderCallArgs {
+  apiKey: string;
+  baseURL: string | undefined;
+  model: string;
+  userPrompt: string;
+  ticketId: number;
+}
+
+async function runTriageAnthropic(args: ProviderCallArgs): Promise<TriageResult> {
+  const { apiKey, baseURL, model, userPrompt, ticketId } = args;
+  const client = new Anthropic({ apiKey, baseURL });
 
   // output_config.format with json_schema makes Anthropic validate the
   // response against the schema server-side, so the first content block
@@ -246,11 +278,60 @@ export async function runTriage(
     throw new Error(`Anthropic response was not valid JSON despite schema enforcement: ${msg}`);
   }
 
-  // Schema didn't include these — we add them from request context so the
-  // UI's TriageResult shape stays compatible.
   return {
     ...parsed,
-    ticketId: ticket.id,
+    ticketId,
+    generatedAt: new Date().toISOString(),
+    model: response.model || model,
+  } as TriageResult;
+}
+
+// ── OpenAI-compatible path ────────────────────────────────────────
+
+async function runTriageOpenAI(args: ProviderCallArgs): Promise<TriageResult> {
+  const { apiKey, baseURL, model, userPrompt, ticketId } = args;
+  // The openai SDK requires *some* baseURL even when pointing at api.openai.com.
+  // We let it use its own default when the user left baseURL blank — that's
+  // an unusual configuration (the user picked "OpenAI-compatible" but with
+  // no URL), but the validateSettings step should have caught it earlier.
+  const client = new OpenAI({ apiKey, baseURL });
+
+  // response_format with json_schema + strict:true gives us the same
+  // server-side validation guarantee as Anthropic's output_config.format.
+  // The schema is identical; only the wire format differs.
+  const response = await client.chat.completions.create({
+    model,
+    max_tokens: 8000,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: userPrompt },
+    ],
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "triage_result",
+        schema: TRIAGE_SCHEMA,
+        strict: true,
+      },
+    },
+  });
+
+  const text = response.choices[0]?.message?.content;
+  if (!text) {
+    throw new Error("OpenAI-compatible API returned no message content");
+  }
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`OpenAI-compatible response was not valid JSON: ${msg}`);
+  }
+
+  return {
+    ...parsed,
+    ticketId,
     generatedAt: new Date().toISOString(),
     model: response.model || model,
   } as TriageResult;

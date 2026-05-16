@@ -30,6 +30,10 @@ export async function POST(req: NextRequest) {
   }
 
   const current = loadSettings();
+  const llmProvider: Settings["llmProvider"] =
+    body.llmProvider === "openai-compatible" || body.llmProvider === "anthropic"
+      ? body.llmProvider
+      : current.llmProvider;
   const next: Settings = {
     bugzillaUrl: (body.bugzillaUrl ?? current.bugzillaUrl).trim().replace(/\/$/, ""),
     bugzillaApiKey: body.bugzillaApiKey?.trim() || current.bugzillaApiKey,
@@ -37,6 +41,8 @@ export async function POST(req: NextRequest) {
       ? body.bugzillaInsecure
       : current.bugzillaInsecure,
     bugzillaLogin: (body.bugzillaLogin ?? current.bugzillaLogin).trim(),
+    llmProvider,
+    llmBaseUrl: (body.llmBaseUrl ?? current.llmBaseUrl).trim().replace(/\/$/, ""),
     anthropicApiKey: body.anthropicApiKey?.trim() || current.anthropicApiKey,
     defaultModel: (body.defaultModel ?? current.defaultModel).trim() || "claude-opus-4-7",
   };

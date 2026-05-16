@@ -31,13 +31,35 @@ const SETTINGS_FILE_NAME = "settings.json";
 const APP_DIR_NAME = "bugzilla-triage-desktop";
 const SCHEMA_VERSION = 1;
 
+/** Which SDK the triage step uses.
+ *
+ *  - "anthropic"          → @anthropic-ai/sdk, default baseURL https://api.anthropic.com.
+ *                           Supports output_config.format for server-side JSON schema
+ *                           validation. The original (and recommended) path.
+ *  - "openai-compatible"  → openai SDK pointed at a user-supplied baseURL.
+ *                           Works with any provider that speaks the OpenAI
+ *                           Chat Completions API: OpenAI itself, Azure OpenAI,
+ *                           LiteLLM proxy, Ollama, LM Studio, etc.
+ */
+export type LlmProvider = "anthropic" | "openai-compatible";
+
 export interface Settings {
   bugzillaUrl: string;          // e.g. https://ticketing.internal.umsemi.com
   bugzillaApiKey: string;       // 40-char API key from Bugzilla
   bugzillaInsecure: boolean;    // skip TLS verification (for self-signed corp certs)
   bugzillaLogin: string;        // email — used as the /rest/whoami fallback
-  anthropicApiKey: string;      // sk-ant-… for the triage step
-  defaultModel: string;         // e.g. claude-opus-4-7
+
+  // ── LLM (AI triage) ────────────────────────────────────────────
+  // Field-naming note: `anthropicApiKey` is kept verbatim from v0.1.x for
+  // backwards compatibility with already-saved settings.json files. Despite
+  // the name, it stores whichever provider's key the user configured —
+  // it's an "Anthropic key" when llmProvider="anthropic", or the OpenAI /
+  // proxy key when llmProvider="openai-compatible". Don't rename without a
+  // migration step in loadSettings().
+  llmProvider: LlmProvider;     // which SDK to use for triage
+  llmBaseUrl: string;           // empty → SDK default; required when openai-compatible
+  anthropicApiKey: string;      // see naming note above
+  defaultModel: string;         // model ID (e.g. claude-opus-4-7 or gpt-4o-mini)
 }
 
 interface StoredEnvelope {
@@ -50,6 +72,8 @@ const EMPTY_SETTINGS: Settings = {
   bugzillaApiKey: "",
   bugzillaInsecure: true,
   bugzillaLogin: "",
+  llmProvider: "anthropic",
+  llmBaseUrl: "",
   anthropicApiKey: "",
   defaultModel: "claude-opus-4-7",
 };
@@ -90,12 +114,21 @@ let _cache: Settings | null = null;
  * developer workflows (no settings file → reads BUGZILLA_URL / etc.),
  * but the file wins once the user has saved anything. */
 function envSettings(): Settings {
+  const provider = (process.env.LLM_PROVIDER || "").toLowerCase();
+  const llmProvider: LlmProvider =
+    provider === "openai-compatible" ? "openai-compatible" : "anthropic";
   return {
     bugzillaUrl: (process.env.BUGZILLA_URL || "").replace(/\/$/, ""),
     bugzillaApiKey: process.env.BUGZILLA_API_KEY || "",
     bugzillaInsecure: (process.env.BUGZILLA_INSECURE || "true").toLowerCase() === "true",
     bugzillaLogin: process.env.BUGZILLA_LOGIN || "",
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY || "",
+    llmProvider,
+    llmBaseUrl: (process.env.LLM_BASE_URL || "").trim().replace(/\/$/, ""),
+    // OPENAI_API_KEY honored as a fallback when LLM_PROVIDER=openai-compatible
+    // so devs can `export OPENAI_API_KEY=…` without re-typing in the UI.
+    anthropicApiKey:
+      process.env.ANTHROPIC_API_KEY ||
+      (llmProvider === "openai-compatible" ? process.env.OPENAI_API_KEY || "" : ""),
     defaultModel: process.env.TRIAGE_MODEL || "claude-opus-4-7",
   };
 }
@@ -121,7 +154,10 @@ export function loadSettings(): Settings {
   }
 
   // File takes precedence — env is the fallback for unset fields.
-  _cache = { ...env, ...fromFile };
+  // EMPTY_SETTINGS sits underneath so new fields added in a later release
+  // (e.g. llmProvider, llmBaseUrl) get safe defaults when reading an older
+  // settings.json that pre-dates them — no schema migration needed.
+  _cache = { ...EMPTY_SETTINGS, ...env, ...fromFile };
   return _cache;
 }
 
@@ -162,8 +198,21 @@ export function validateSettings(s: Partial<Settings>): string[] {
   } else if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s.bugzillaLogin)) {
     errors.push("Bugzilla login must look like an email address");
   }
-  if (s.anthropicApiKey && !s.anthropicApiKey.startsWith("sk-ant-")) {
+  // LLM key shape check is conditional on provider. Anthropic keys have a
+  // very recognizable prefix; OpenAI-compatible providers use everything
+  // from `sk-…` to opaque proxy tokens, so we don't try to validate format.
+  if (s.llmProvider === "anthropic" && s.anthropicApiKey && !s.anthropicApiKey.startsWith("sk-ant-")) {
     errors.push("Anthropic API key should start with sk-ant-");
+  }
+  if (s.llmProvider === "openai-compatible") {
+    if (!s.llmBaseUrl?.trim()) {
+      errors.push("LLM base URL is required when provider is OpenAI-compatible");
+    } else if (!/^https?:\/\//.test(s.llmBaseUrl)) {
+      errors.push("LLM base URL must start with http:// or https://");
+    }
+  } else if (s.llmBaseUrl?.trim() && !/^https?:\/\//.test(s.llmBaseUrl)) {
+    // baseURL is optional for Anthropic, but if set must be a valid http(s) URL.
+    errors.push("LLM base URL must start with http:// or https://");
   }
   return errors;
 }
@@ -175,9 +224,11 @@ export interface SettingsForUi {
   bugzillaUrl: string;
   bugzillaInsecure: boolean;
   bugzillaLogin: string;
+  llmProvider: LlmProvider;
+  llmBaseUrl: string;
   defaultModel: string;
   hasBugzillaApiKey: boolean;
-  hasAnthropicApiKey: boolean;
+  hasAnthropicApiKey: boolean;     // legacy name — really "has LLM key set"
   filePath: string;
 }
 
@@ -186,6 +237,8 @@ export function settingsForUi(s: Settings): SettingsForUi {
     bugzillaUrl: s.bugzillaUrl,
     bugzillaInsecure: s.bugzillaInsecure,
     bugzillaLogin: s.bugzillaLogin,
+    llmProvider: s.llmProvider,
+    llmBaseUrl: s.llmBaseUrl,
     defaultModel: s.defaultModel,
     hasBugzillaApiKey: Boolean(s.bugzillaApiKey),
     hasAnthropicApiKey: Boolean(s.anthropicApiKey),
