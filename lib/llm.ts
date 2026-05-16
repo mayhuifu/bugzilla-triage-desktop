@@ -103,7 +103,7 @@ const TRIAGE_SCHEMA = {
     bugzillaComment: {
       type: "string",
       description:
-        "Full 4-layer analysis text. The system will auto-prefix with 'Analyzed by Claude:' on " +
+        "Full 4-layer analysis text. The system will auto-prefix with 'Analyzed by AI Triage Bot:' on " +
         "submission, so DO NOT include that prefix yourself. Structure: OBSERVED / INFERRED / " +
         "HYPOTHESIS (ranked) / NEXT STEPS (with PASS/FAIL).",
     },
@@ -122,7 +122,7 @@ CRITICAL RULES:
 3. Hypotheses must be FALSIFIABLE — each one must come with a test that could disprove it.
 4. Next steps must name an owner (use email username before @) and a measurable PASS/FAIL criterion.
 5. The bugzillaComment field must follow the 4-layer structure: OBSERVED → INFERRED → HYPOTHESIS → NEXT STEPS.
-6. DO NOT include "Analyzed by Claude:" prefix in bugzillaComment — that is added automatically.
+6. DO NOT include "Analyzed by AI Triage Bot:" prefix in bugzillaComment — that is added automatically.
 7. customerSummary must strip internal codenames (BBIC → baseband subsystem, RFIC → RF subsystem, etc.)
 8. For modem/RF tickets, identify the operating band (e.g. n40, B7, n78) and applicable 3GPP spec.
 
@@ -288,6 +288,26 @@ async function runTriageAnthropic(args: ProviderCallArgs): Promise<TriageResult>
 
 // ── OpenAI-compatible path ────────────────────────────────────────
 
+// Per-call format strategy. OpenAI itself accepts the strict `json_schema`
+// type, but most "OpenAI-compatible" providers don't:
+//   - DeepSeek returns: 400 "This response_format type is unavailable now"
+//   - Together / OpenRouter / Ollama / vLLM / Azure all reject json_schema
+//   - Old gpt-3.5 era endpoints reject it
+// They DO accept the older `json_object` type, which guarantees syntactic
+// JSON but doesn't enforce a schema server-side. We compensate by appending
+// the schema (as JSON) to the system prompt so the model knows the shape.
+// That works on DeepSeek, OpenAI, Together, OpenRouter, Ollama, Azure, vLLM.
+//
+// `json_object` mode also REQUIRES the word "JSON" to appear in the
+// system or user message — including the schema satisfies that.
+const SCHEMA_INSTRUCTION = `
+Respond with a single JSON object that conforms exactly to the schema below.
+No prose, no markdown fences, no preamble — only the JSON object.
+
+SCHEMA:
+${JSON.stringify(TRIAGE_SCHEMA, null, 2)}
+`.trim();
+
 async function runTriageOpenAI(args: ProviderCallArgs): Promise<TriageResult> {
   const { apiKey, baseURL, model, userPrompt, ticketId } = args;
   // The openai SDK requires *some* baseURL even when pointing at api.openai.com.
@@ -296,24 +316,18 @@ async function runTriageOpenAI(args: ProviderCallArgs): Promise<TriageResult> {
   // no URL), but the validateSettings step should have caught it earlier.
   const client = new OpenAI({ apiKey, baseURL });
 
-  // response_format with json_schema + strict:true gives us the same
-  // server-side validation guarantee as Anthropic's output_config.format.
-  // The schema is identical; only the wire format differs.
+  const systemContent = `${SYSTEM_PROMPT}\n\n${SCHEMA_INSTRUCTION}`;
   const response = await client.chat.completions.create({
     model,
     max_tokens: 8000,
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: systemContent },
       { role: "user", content: userPrompt },
     ],
-    response_format: {
-      type: "json_schema",
-      json_schema: {
-        name: "triage_result",
-        schema: TRIAGE_SCHEMA,
-        strict: true,
-      },
-    },
+    // json_object mode is the broadly-supported subset — guarantees the
+    // body parses as JSON, leaves shape enforcement to the schema-in-prompt
+    // above. Drop to plain text if even this isn't supported (rare).
+    response_format: { type: "json_object" },
   });
 
   const text = response.choices[0]?.message?.content;
@@ -321,18 +335,62 @@ async function runTriageOpenAI(args: ProviderCallArgs): Promise<TriageResult> {
     throw new Error("OpenAI-compatible API returned no message content");
   }
 
+  // Defensive parse: some providers wrap JSON in a markdown code fence
+  // despite the explicit instruction not to. Strip it before parsing.
+  const cleaned = stripJsonFence(text);
+
   let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(cleaned);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`OpenAI-compatible response was not valid JSON: ${msg}`);
+    throw new Error(
+      `OpenAI-compatible response was not valid JSON: ${msg}. ` +
+      `First 200 chars: ${cleaned.slice(0, 200)}`,
+    );
   }
 
+  // Fill in missing fields with safe defaults — without server-side schema
+  // validation, the model may omit fields. Filling defaults here keeps the
+  // UI from crashing while still surfacing the model's actual output where
+  // it provided one.
+  return fillTriageDefaults(parsed, ticketId, response.model || model);
+}
+
+/** Strip a leading ```json … ``` fence if the model included one despite
+ *  being told not to. Idempotent on already-clean JSON. */
+function stripJsonFence(s: string): string {
+  const trimmed = s.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+  return (fenced ? fenced[1] : trimmed).trim();
+}
+
+/** Coerce a model response into a TriageResult, filling missing fields
+ *  with safe empties. Only used by the OpenAI-compatible path where the
+ *  server can't enforce the schema. */
+function fillTriageDefaults(
+  parsed: Record<string, unknown>,
+  ticketId: number,
+  model: string,
+): TriageResult {
+  const asArr = <T>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
+  const asStr = (v: unknown, dflt = ""): string => (typeof v === "string" ? v : dflt);
+  const conf = parsed.confidence;
   return {
-    ...parsed,
     ticketId,
     generatedAt: new Date().toISOString(),
-    model: response.model || model,
-  } as TriageResult;
+    model,
+    confidence:
+      conf === "high" || conf === "medium" || conf === "low" ? conf : "medium",
+    domain: asStr(parsed.domain),
+    specReferences: asArr<string>(parsed.specReferences),
+    issueSummary: asStr(parsed.issueSummary),
+    rootCauses: asArr<TriageResult["rootCauses"][number]>(parsed.rootCauses),
+    missingInformation: asArr<string>(parsed.missingInformation),
+    nextSteps: asArr<TriageResult["nextSteps"][number]>(parsed.nextSteps),
+    escalationRecommendation: asStr(parsed.escalationRecommendation),
+    internalSummary: asStr(parsed.internalSummary),
+    customerSummary: asStr(parsed.customerSummary),
+    bugzillaComment: asStr(parsed.bugzillaComment),
+  };
 }

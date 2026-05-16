@@ -111,9 +111,15 @@ export function TicketTable({
                   <Link href={`/tickets/${t.id}`} className="text-slate-100 hover:text-accent-glow line-clamp-2 font-medium">
                     {t.summary}
                   </Link>
-                  {t.label === "Analyzed by Claude" && (
+                  {/* Match both the current "Analyzed by AI Triage Bot" label
+                      and the legacy "Analyzed by Claude" label, so tickets
+                      analyzed before the multi-provider rename still show
+                      the badge. cf_label can be a list separated by '; '. */}
+                  {(t.label === "Analyzed by AI Triage Bot" ||
+                    t.label === "Analyzed by Claude" ||
+                    (t.label && /(^|;\s*)Analyzed by (AI Triage Bot|Claude)(\s*;|$)/.test(t.label))) && (
                     <div className="mt-1 inline-flex items-center gap-1 text-[10px] text-fuchsia-400/80">
-                      <Sparkles className="w-3 h-3" /> previously analyzed by Claude
+                      <Sparkles className="w-3 h-3" /> previously analyzed by AI
                     </div>
                   )}
                 </td>

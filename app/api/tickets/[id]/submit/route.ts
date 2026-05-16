@@ -68,10 +68,10 @@ export async function POST(
 
   try {
     // For AI triage: the submit() helper auto-applies the
-    // "Analyzed by Claude:" prefix and the "Analyzed by Claude" cf_label
-    // per umsemi conventions. For manual triage (submission.manual===true)
-    // both are skipped so we don't misattribute human-authored comments
-    // to Claude.
+    // "Analyzed by AI Triage Bot:" prefix and the "Analyzed by AI Triage Bot"
+    // cf_label per umsemi conventions. For manual triage
+    // (submission.manual===true) both are skipped so we don't misattribute
+    // human-authored comments to the bot.
     const receipt = await bridgeSubmit({
       id: ticketId,
       comment: submission.comment,

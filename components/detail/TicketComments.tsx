@@ -29,17 +29,26 @@ export function TicketComments({ comments }: { comments: TicketComment[] }) {
       </div>
       <div className="space-y-3 max-h-[480px] overflow-y-auto pr-2">
         {conversation.map(c => {
-          const isClaude = c.author.includes("claude") || c.text.startsWith("Analyzed by Claude:") || c.text.startsWith("Auto Triggered by Claude");
+          // Heuristic for "this comment was AI-authored". Matches the current
+          // "Analyzed by AI Triage Bot:" prefix AND the legacy "Analyzed by
+          // Claude:" / "Auto Triggered by Claude" prefixes so historical
+          // tickets still render with the AI styling.
+          const isAiAuthored =
+            c.author.includes("claude") ||
+            c.author.includes("ai-triage") ||
+            c.text.startsWith("Analyzed by AI Triage Bot:") ||
+            c.text.startsWith("Analyzed by Claude:") ||
+            c.text.startsWith("Auto Triggered by Claude");
           return (
             <div
               key={c.id}
-              className={`rounded-lg border p-3 ${isClaude ? "bg-fuchsia-500/5 border-fuchsia-500/20" : "bg-bg-panel/40 border-bg-border/40"}`}
+              className={`rounded-lg border p-3 ${isAiAuthored ? "bg-fuchsia-500/5 border-fuchsia-500/20" : "bg-bg-panel/40 border-bg-border/40"}`}
             >
               <div className="flex items-center justify-between mb-2 text-[11px]">
                 <div className="flex items-center gap-2">
-                  {isClaude && <Sparkles className="w-3 h-3 text-fuchsia-400" />}
-                  <span className={`font-medium ${isClaude ? "text-fuchsia-300" : "text-slate-300"}`}>
-                    {isClaude ? "Claude (AI Triage)" : c.author.split("@")[0]}
+                  {isAiAuthored && <Sparkles className="w-3 h-3 text-fuchsia-400" />}
+                  <span className={`font-medium ${isAiAuthored ? "text-fuchsia-300" : "text-slate-300"}`}>
+                    {isAiAuthored ? "AI Triage Bot" : c.author.split("@")[0]}
                   </span>
                   {c.isPrivate && <Lock className="w-3 h-3 text-amber-400" />}
                 </div>

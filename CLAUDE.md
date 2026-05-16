@@ -26,7 +26,7 @@ The contract between TS and Python is **one line of JSON on stdout** (last line 
 
 ### Why a Python bridge instead of porting to TS
 
-The peer `bugzilla-mcp` repo encodes the umsemi-specific workflow rules — `"Analyzed by Claude:"` comment prefix, the `Analyzed by Claude` `cf_label`, the allowed resolution vocabulary, the 4-layer OBSERVED/INFERRED/HYPOTHESIS/NEXT-STEPS scaffold, and the 3GPP domain classifier. Reimplementing these in TS would drift. Treat `scripts/bz_bridge.py` and `scripts/triage_llm.py` as thin adapters; **the source of truth for triage conventions is in `../bugzilla-mcp/skills/`**, not in this repo.
+The peer `bugzilla-mcp` repo encodes the umsemi-specific workflow rules — `"Analyzed by AI Triage Bot:"` comment prefix (renamed from `"Analyzed by Claude:"` in v0.1.3 so it stays accurate when triage runs against non-Anthropic providers), the matching `Analyzed by AI Triage Bot` `cf_label`, the allowed resolution vocabulary, the 4-layer OBSERVED/INFERRED/HYPOTHESIS/NEXT-STEPS scaffold, and the 3GPP domain classifier. Reimplementing these in TS would drift. Treat `scripts/bz_bridge.py` and `scripts/triage_llm.py` as thin adapters; **the source of truth for triage conventions is in `../bugzilla-mcp/skills/`**, not in this repo.
 
 ### Credentials & path resolution
 
@@ -51,7 +51,7 @@ Every `/api/tickets*` route catches bridge errors and returns mock data with a `
 
 ### Submit path safety
 
-`POST /api/tickets/:id/submit` is the only endpoint that **mutates** Bugzilla. The comment body is piped via a tmp file to avoid shell-arg length limits ([lib/bridge.ts:132-150](lib/bridge.ts:132)). The Python skill auto-prefixes `"Analyzed by Claude:"` and adds the `"Analyzed by Claude"` `cf_label`, so the model is told **not** to include either in `bugzillaComment` — adding them in TS would double-prefix.
+`POST /api/tickets/:id/submit` is the only endpoint that **mutates** Bugzilla. The comment body is piped via a tmp file to avoid shell-arg length limits ([lib/bridge.ts:132-150](lib/bridge.ts:132)). The Python skill auto-prefixes `"Analyzed by AI Triage Bot:"` and adds the `"Analyzed by AI Triage Bot"` `cf_label`, so the model is told **not** to include either in `bugzillaComment` — adding them in TS would double-prefix. (Both strings were `"Analyzed by Claude…"` up through v0.1.2; renamed in v0.1.3.)
 
 ## Conventions
 

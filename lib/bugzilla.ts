@@ -28,9 +28,19 @@ import { loadSettings } from "./settings";
 
 /** umsemi-specific conventions, previously imported from the bugzilla-mcp
  * skill module. Centralized here so we only have one place to update if
- * resolution vocabulary changes. */
-export const ANALYSIS_PREFIX = "Analyzed by Claude:";
-export const CLAUDE_LABEL = "Analyzed by Claude";
+ * resolution vocabulary changes.
+ *
+ * Naming history: these used to be "Analyzed by Claude:" / "Analyzed by Claude"
+ * back when the only supported LLM was Anthropic's Claude. Once the app gained
+ * multi-provider support (OpenAI, DeepSeek, Ollama, etc.) the Claude-specific
+ * wording became misleading on real Bugzilla comments. The neutral "AI Triage
+ * Bot" label/prefix is what's written to Bugzilla today. Recognizers in the
+ * UI (see TicketComments / TicketTable) still match the old strings too so
+ * historical tickets keep their AI-styling. */
+export const ANALYSIS_PREFIX = "Analyzed by AI Triage Bot:";
+export const ANALYSIS_LABEL = "Analyzed by AI Triage Bot";
+/** @deprecated kept for any external code that imported the old symbol name. */
+export const CLAUDE_LABEL = ANALYSIS_LABEL;
 export const VALID_RESOLUTIONS = [
   "FIXED", "WONT_FIX", "DUPLICATE", "NOT_REPRODUCIBLE",
   "FIX_IN_OTHER_PRODUCT", "WORK_ITEM_DONE",
@@ -336,10 +346,10 @@ export async function submit(opts: {
   comment: string;
   transitionTo?: TicketStatus;
   resolution?: string;
-  /** When true: skip the "Analyzed by Claude:" prefix AND skip appending
-   *  the "Analyzed by Claude" cf_label. Used by the manual-triage path
-   *  where a human authored the comment without AI assistance — mis-
-   *  attributing it to Claude would be misleading. */
+  /** When true: skip the "Analyzed by AI Triage Bot:" prefix AND skip
+   *  appending the matching cf_label. Used by the manual-triage path where
+   *  a human authored the comment without AI assistance — mis-attributing
+   *  it to the bot would be misleading. */
   manual?: boolean;
 }): Promise<SubmissionReceipt> {
   const { id, comment, transitionTo, resolution, manual } = opts;
@@ -351,7 +361,7 @@ export async function submit(opts: {
     }
   }
 
-  // 1. Post the comment. AI flow auto-prefixes with "Analyzed by Claude:";
+  // 1. Post the comment. AI flow auto-prefixes with "Analyzed by AI Triage Bot:";
   //    manual flow posts the comment as-typed.
   const body = manual
     ? comment
@@ -359,14 +369,14 @@ export async function submit(opts: {
   const commentRes = await bzPost(`/rest/bug/${id}/comment`, { comment: body }) as { id?: number };
   const commentId = commentRes.id;
 
-  // 2. Append the "Analyzed by Claude" cf_label — AI flow only.
+  // 2. Append the "Analyzed by AI Triage Bot" cf_label — AI flow only.
   //    (PUT /rest/bug/{id} with cf_label set replaces the value, so we
   //    need to merge first.)
   if (!manual) {
     const currentLabelRes = await bzGet(`/rest/bug/${id}`, [["include_fields", "cf_label"]]) as { bugs?: Array<{ cf_label?: string }> };
     const currentLabel = currentLabelRes.bugs?.[0]?.cf_label ?? "";
     const labels = new Set(currentLabel.split(/[;,]\s*/).map(l => l.trim()).filter(Boolean));
-    labels.add(CLAUDE_LABEL);
+    labels.add(ANALYSIS_LABEL);
     const mergedLabel = Array.from(labels).join("; ");
     await bzPut(`/rest/bug/${id}`, { cf_label: mergedLabel });
   }
@@ -387,8 +397,8 @@ export async function submit(opts: {
     newStatus,
     postedAt: new Date().toISOString(),
     message: manual
-      ? "Posted to Bugzilla (manual triage — no Claude prefix or label)"
-      : `Posted to Bugzilla (label='${CLAUDE_LABEL}', prefix='${ANALYSIS_PREFIX}')`,
+      ? "Posted to Bugzilla (manual triage — no AI prefix or label)"
+      : `Posted to Bugzilla (label='${ANALYSIS_LABEL}', prefix='${ANALYSIS_PREFIX}')`,
   };
 }
 
@@ -545,7 +555,10 @@ export interface BridgeConfig {
   insecure: boolean;
   hasApiKey: boolean;
   login: string;
+  /** @deprecated alias for analysisLabel — kept for callers that pre-dated
+   *  the multi-provider rename. New code should read analysisLabel. */
   claudeLabel: string;
+  analysisLabel: string;
   analysisPrefix: string;
   validResolutions: string[];
 }
@@ -558,7 +571,8 @@ export function getConfig(): BridgeConfig {
     insecure: cfg.insecure,
     hasApiKey: Boolean(cfg.apiKey),
     login: cfg.login,
-    claudeLabel: CLAUDE_LABEL,
+    claudeLabel: ANALYSIS_LABEL,
+    analysisLabel: ANALYSIS_LABEL,
     analysisPrefix: ANALYSIS_PREFIX,
     validResolutions: [...VALID_RESOLUTIONS],
   };

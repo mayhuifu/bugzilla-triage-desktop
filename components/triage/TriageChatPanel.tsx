@@ -66,8 +66,8 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
   const [receipt, setReceipt] = useState<SubmissionReceipt | null>(null);
   // Workflow mode: "ai" runs the LLM and produces the full structured chain;
   // "manual" drops the user straight into a comment-textarea + approve+submit
-  // card with no LLM call (no API key required, no "Analyzed by Claude" prefix
-  // or label applied on submit). null = user hasn't picked yet.
+  // card with no LLM call (no API key required, no "Analyzed by AI Triage Bot"
+  // prefix or label applied on submit). null = user hasn't picked yet.
   const [mode, setMode] = useState<"ai" | "manual" | null>(null);
   const autoRanRef = useRef(false);
   const endRef = useRef<HTMLDivElement>(null);
@@ -435,7 +435,7 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
         return t && (
           <ChatBubble key={turn.id} role="ai" time={turn.time}
             title="Bugzilla comment draft"
-            subtitle={`Auto-prefixed with "Analyzed by Claude:" on submission. ${t.bugzillaComment.length} chars.`}
+            subtitle={`Auto-prefixed with "Analyzed by AI Triage Bot:" on submission. ${t.bugzillaComment.length} chars.`}
           >
             <EditableTextarea
               value={t.bugzillaComment}
@@ -519,7 +519,7 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
           <ChatBubble
             key={turn.id} role="user" time={turn.time}
             title="Manual triage"
-            subtitle="Write your analysis. No AI is invoked; the comment is posted as-typed (no &quot;Analyzed by Claude&quot; prefix or label)."
+            subtitle="Write your analysis. No AI is invoked; the comment is posted as-typed (no &quot;Analyzed by AI Triage Bot&quot; prefix or label)."
             highlight={!approved && !receipt}
           >
             <div className="space-y-3">

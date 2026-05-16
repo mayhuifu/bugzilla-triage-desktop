@@ -195,7 +195,7 @@ The two share a lot of UI code at the moment; expect them to drift over time as 
 
 The original CLI build's umsemi-specific workflow conventions are preserved verbatim:
 - 4-layer **OBSERVED / INFERRED / HYPOTHESIS / NEXT-STEPS** scaffold in `lib/llm.ts` `SYSTEM_PROMPT`
-- The `Analyzed by Claude:` comment prefix and `Analyzed by Claude` `cf_label` are still auto-applied by `lib/bugzilla.ts` `submit()`
+- The `Analyzed by AI Triage Bot:` comment prefix and `Analyzed by AI Triage Bot` `cf_label` are auto-applied by `lib/bugzilla.ts` `submit()` on the AI-triage path (manual triage skips both). Up to v0.1.2 these were `"Analyzed by Claude:"` / `"Analyzed by Claude"`; renamed in v0.1.3 so the labels stay accurate when triage is run against non-Anthropic models. The dashboard recognizes both the new and the legacy strings so tickets analyzed before the rename still show with the AI styling.
 - Same `VALID_RESOLUTIONS` vocabulary (FIXED, WONT_FIX, DUPLICATE, etc.)
 
 What's gone:
