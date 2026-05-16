@@ -34,6 +34,10 @@ export async function POST(req: NextRequest) {
     body.llmProvider === "openai-compatible" || body.llmProvider === "anthropic"
       ? body.llmProvider
       : current.llmProvider;
+  const themeMode: Settings["themeMode"] =
+    body.themeMode === "light" || body.themeMode === "dark" || body.themeMode === "system"
+      ? body.themeMode
+      : current.themeMode;
   const next: Settings = {
     bugzillaUrl: (body.bugzillaUrl ?? current.bugzillaUrl).trim().replace(/\/$/, ""),
     bugzillaApiKey: body.bugzillaApiKey?.trim() || current.bugzillaApiKey,
@@ -45,6 +49,7 @@ export async function POST(req: NextRequest) {
     llmBaseUrl: (body.llmBaseUrl ?? current.llmBaseUrl).trim().replace(/\/$/, ""),
     anthropicApiKey: body.anthropicApiKey?.trim() || current.anthropicApiKey,
     defaultModel: (body.defaultModel ?? current.defaultModel).trim() || "claude-opus-4-7",
+    themeMode,
   };
 
   const errors = validateSettings(next);

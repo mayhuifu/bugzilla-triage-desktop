@@ -2,9 +2,80 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ──────────────────────────────────────────────────────────────────
+   Dual-theme CSS variables.
+   Variables are RGB triplets (no rgb() wrapper, no commas — modern
+   space-separated syntax) so Tailwind's `<alpha-value>` substitution
+   works: a value like `100 116 139` lets `bg-bg-panel/40` resolve to
+   `rgb(100 116 139 / 0.4)`.
+
+   :root        = light theme (the default; what you get with no .dark
+                  class on <html>)
+   :root.dark   = dark theme (current visual identity; what users had
+                  before v0.1.4)
+
+   ThemeManager (mounted in app/layout.tsx) toggles .dark on <html>
+   based on the user's setting. An inline script in <head> applies
+   the right class BEFORE React hydrates to prevent FOUC.
+   ────────────────────────────────────────────────────────────────── */
 @layer base {
   :root {
+    color-scheme: light;
+
+    /* Surfaces — light: slate-50/white/slate-100/200/300 */
+    --bg-base:   248 250 252;  /* slate-50 */
+    --bg-panel:  255 255 255;  /* white */
+    --bg-card:   241 245 249;  /* slate-100 */
+    --bg-hover:  226 232 240;  /* slate-200 */
+    --bg-border: 203 213 225;  /* slate-300 */
+
+    /* Brand — darker accent on light bg for contrast */
+    --accent:      37 99 235;   /* blue-600 */
+    --accent-dim:  29 78 216;   /* blue-700 */
+    --accent-glow: 59 130 246;  /* blue-500 */
+
+    /* Slate scale INVERTED so text-slate-100 (the "primary text" semantic
+       in dark mode) renders near-black on light bg. Mid-tones (400/500)
+       are left as canonical values since they read fine on both themes. */
+    --slate-50:  15 23 42;     /* slate-900 */
+    --slate-100: 15 23 42;     /* slate-900 — "primary text" */
+    --slate-200: 30 41 59;     /* slate-800 */
+    --slate-300: 51 65 85;     /* slate-700 */
+    --slate-400: 71 85 105;    /* slate-600 */
+    --slate-500: 100 116 139;  /* slate-500 (unchanged — mid-gray) */
+    --slate-600: 148 163 184;  /* slate-400 */
+    --slate-700: 203 213 225;  /* slate-300 */
+    --slate-800: 226 232 240;  /* slate-200 */
+    --slate-900: 241 245 249;  /* slate-100 */
+    --slate-950: 248 250 252;  /* slate-50 */
+  }
+
+  :root.dark {
     color-scheme: dark;
+
+    /* Surfaces — the original v0.1.x dark palette */
+    --bg-base:   10 14 26;
+    --bg-panel:  15 21 36;
+    --bg-card:   20 27 45;
+    --bg-hover:  26 34 56;
+    --bg-border: 31 41 64;
+
+    --accent:      59 130 246;  /* blue-500 */
+    --accent-dim:  30 64 175;   /* blue-800 */
+    --accent-glow: 96 165 250;  /* blue-400 */
+
+    /* Slate scale at its canonical (Tailwind default) values. */
+    --slate-50:  248 250 252;
+    --slate-100: 241 245 249;
+    --slate-200: 226 232 240;
+    --slate-300: 203 213 225;
+    --slate-400: 148 163 184;
+    --slate-500: 100 116 139;
+    --slate-600: 71 85 105;
+    --slate-700: 51 65 85;
+    --slate-800: 30 41 59;
+    --slate-900: 15 23 42;
+    --slate-950: 2 6 23;
   }
 
   html, body {
@@ -13,10 +84,11 @@
   }
 
   *:focus-visible {
-    @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-bg-base;
+    @apply outline-none ring-2 ring-accent ring-offset-2;
+    --tw-ring-offset-color: rgb(var(--bg-base));
   }
 
-  /* Scrollbar */
+  /* Scrollbar — different track/thumb per theme via CSS vars. */
   ::-webkit-scrollbar {
     width: 10px;
     height: 10px;
@@ -25,11 +97,11 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: #1f2940;
+    background: rgb(var(--bg-border));
     border-radius: 999px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #2a365a;
+    background: rgb(var(--bg-hover));
   }
 }
 

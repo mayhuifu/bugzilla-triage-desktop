@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   Save, Eye, EyeOff, CheckCircle2, AlertCircle, Loader2, ArrowLeft,
-  Database, Bot, Lock, Zap,
+  Database, Bot, Lock, Zap, Monitor, Sun, Moon, Palette,
 } from "lucide-react";
 import { Logo } from "@/components/ui/Logo";
 
@@ -18,6 +18,7 @@ import { Logo } from "@/components/ui/Logo";
 // the existing stored value (handled server-side).
 
 type LlmProvider = "anthropic" | "openai-compatible";
+type ThemeMode = "system" | "light" | "dark";
 
 interface SettingsView {
   bugzillaUrl: string;
@@ -26,6 +27,7 @@ interface SettingsView {
   llmProvider: LlmProvider;
   llmBaseUrl: string;
   defaultModel: string;
+  themeMode: ThemeMode;
   hasBugzillaApiKey: boolean;
   hasAnthropicApiKey: boolean;
   filePath: string;
@@ -72,6 +74,7 @@ export default function SettingsPage() {
   const [llmProvider, setLlmProvider] = useState<LlmProvider>("anthropic");
   const [llmBaseUrl, setLlmBaseUrl] = useState("");
   const [modelMode, setModelMode] = useState<"known" | "custom">("known");
+  const [themeMode, setThemeMode] = useState<ThemeMode>("system");
 
   // Initial load.
   useEffect(() => {
@@ -85,6 +88,7 @@ export default function SettingsPage() {
         setLlmProvider(v.llmProvider);
         setLlmBaseUrl(v.llmBaseUrl);
         setDefaultModel(v.defaultModel);
+        setThemeMode(v.themeMode);
         // If the stored model isn't a known Anthropic preset, drop the
         // dropdown into "custom" mode so the user sees what's persisted.
         setModelMode(
@@ -140,6 +144,7 @@ export default function SettingsPage() {
         body: JSON.stringify({
           bugzillaUrl, bugzillaApiKey, bugzillaInsecure, bugzillaLogin,
           llmProvider, llmBaseUrl, anthropicApiKey, defaultModel,
+          themeMode,
         }),
       });
       const data = await res.json();
@@ -151,6 +156,13 @@ export default function SettingsPage() {
       setBugzillaApiKey("");      // clear write-only fields after save
       setAnthropicApiKey("");
       setSavedAt(Date.now());
+      // Notify ThemeManager so the new theme applies immediately without
+      // requiring a reload.
+      try {
+        window.dispatchEvent(
+          new CustomEvent("bugzilla-theme-changed", { detail: { themeMode } }),
+        );
+      } catch { /* SSR / browsers without CustomEvent — ignore */ }
     } catch (err) {
       setErrors([err instanceof Error ? err.message : "Unknown error"]);
     } finally {
@@ -158,7 +170,7 @@ export default function SettingsPage() {
     }
   }, [
     bugzillaUrl, bugzillaApiKey, bugzillaInsecure, bugzillaLogin,
-    llmProvider, llmBaseUrl, anthropicApiKey, defaultModel,
+    llmProvider, llmBaseUrl, anthropicApiKey, defaultModel, themeMode,
   ]);
 
   return (
@@ -435,6 +447,63 @@ export default function SettingsPage() {
                   )}
                 </div>
               </Field>
+            </section>
+
+            {/* ── Appearance ─────────────────────────────────── */}
+            <section className="card p-5 space-y-4">
+              <div className="flex items-center gap-2">
+                <Palette className="w-4 h-4 text-accent" />
+                <h2 className="text-sm font-medium text-slate-200">Appearance</h2>
+              </div>
+              <p className="text-xs text-slate-500">
+                Choose your color scheme. <span className="text-slate-300">System</span>{" "}
+                follows your OS appearance and updates live if you toggle it without
+                restarting the app.
+              </p>
+
+              <div className="grid grid-cols-3 gap-2">
+                {(
+                  [
+                    { key: "system", label: "System", icon: Monitor,
+                      desc: "Follow OS preference" },
+                    { key: "light",  label: "Light",  icon: Sun,
+                      desc: "Always light" },
+                    { key: "dark",   label: "Dark",   icon: Moon,
+                      desc: "Always dark" },
+                  ] as const
+                ).map(opt => {
+                  const Icon = opt.icon;
+                  const active = themeMode === opt.key;
+                  return (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => setThemeMode(opt.key)}
+                      className={`card p-3 text-left transition-colors ${
+                        active
+                          ? "ring-2 ring-accent border-accent/40"
+                          : "hover:bg-bg-hover"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <Icon className={`w-4 h-4 ${active ? "text-accent" : "text-slate-400"}`} />
+                        <span className={`text-xs font-medium ${active ? "text-slate-100" : "text-slate-200"}`}>
+                          {opt.label}
+                        </span>
+                        {active && (
+                          <CheckCircle2 className="w-3.5 h-3.5 text-accent ml-auto" />
+                        )}
+                      </div>
+                      <div className="text-[10px] text-slate-500 leading-snug">
+                        {opt.desc}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="text-[10px] text-slate-500">
+                Takes effect when you save.
+              </div>
             </section>
 
             {/* ── Errors / Save ───────────────────────────────── */}

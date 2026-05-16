@@ -43,6 +43,12 @@ const SCHEMA_VERSION = 1;
  */
 export type LlmProvider = "anthropic" | "openai-compatible";
 
+/** Theme preference, persisted to settings.json (added in v0.1.4).
+ *  - "system" (default): follow prefers-color-scheme; live-updates if the
+ *    user changes their OS appearance while the app is open.
+ *  - "light" / "dark": explicit override, ignores the system setting. */
+export type ThemeMode = "system" | "light" | "dark";
+
 export interface Settings {
   bugzillaUrl: string;          // e.g. https://ticketing.internal.umsemi.com
   bugzillaApiKey: string;       // 40-char API key from Bugzilla
@@ -60,6 +66,9 @@ export interface Settings {
   llmBaseUrl: string;           // empty → SDK default; required when openai-compatible
   anthropicApiKey: string;      // see naming note above
   defaultModel: string;         // model ID (e.g. claude-opus-4-7 or gpt-4o-mini)
+
+  // ── Appearance ─────────────────────────────────────────────────
+  themeMode: ThemeMode;         // "system" follows prefers-color-scheme
 }
 
 interface StoredEnvelope {
@@ -76,6 +85,7 @@ const EMPTY_SETTINGS: Settings = {
   llmBaseUrl: "",
   anthropicApiKey: "",
   defaultModel: "claude-opus-4-7",
+  themeMode: "system",
 };
 
 // ── Where the file lives ──────────────────────────────────────────
@@ -117,6 +127,11 @@ function envSettings(): Settings {
   const provider = (process.env.LLM_PROVIDER || "").toLowerCase();
   const llmProvider: LlmProvider =
     provider === "openai-compatible" ? "openai-compatible" : "anthropic";
+  const themeEnv = (process.env.THEME_MODE || "").toLowerCase();
+  const themeMode: ThemeMode =
+    themeEnv === "light" || themeEnv === "dark" || themeEnv === "system"
+      ? (themeEnv as ThemeMode)
+      : "system";
   return {
     bugzillaUrl: (process.env.BUGZILLA_URL || "").replace(/\/$/, ""),
     bugzillaApiKey: process.env.BUGZILLA_API_KEY || "",
@@ -130,6 +145,7 @@ function envSettings(): Settings {
       process.env.ANTHROPIC_API_KEY ||
       (llmProvider === "openai-compatible" ? process.env.OPENAI_API_KEY || "" : ""),
     defaultModel: process.env.TRIAGE_MODEL || "claude-opus-4-7",
+    themeMode,
   };
 }
 
@@ -227,6 +243,7 @@ export interface SettingsForUi {
   llmProvider: LlmProvider;
   llmBaseUrl: string;
   defaultModel: string;
+  themeMode: ThemeMode;
   hasBugzillaApiKey: boolean;
   hasAnthropicApiKey: boolean;     // legacy name — really "has LLM key set"
   filePath: string;
@@ -240,6 +257,7 @@ export function settingsForUi(s: Settings): SettingsForUi {
     llmProvider: s.llmProvider,
     llmBaseUrl: s.llmBaseUrl,
     defaultModel: s.defaultModel,
+    themeMode: s.themeMode,
     hasBugzillaApiKey: Boolean(s.bugzillaApiKey),
     hasAnthropicApiKey: Boolean(s.anthropicApiKey),
     filePath: settingsPath(),
