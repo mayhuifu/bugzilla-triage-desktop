@@ -336,8 +336,13 @@ export async function submit(opts: {
   comment: string;
   transitionTo?: TicketStatus;
   resolution?: string;
+  /** When true: skip the "Analyzed by Claude:" prefix AND skip appending
+   *  the "Analyzed by Claude" cf_label. Used by the manual-triage path
+   *  where a human authored the comment without AI assistance — mis-
+   *  attributing it to Claude would be misleading. */
+  manual?: boolean;
 }): Promise<SubmissionReceipt> {
-  const { id, comment, transitionTo, resolution } = opts;
+  const { id, comment, transitionTo, resolution, manual } = opts;
 
   // Validate resolution before mutating anything.
   if (transitionTo === "RESOLVED") {
@@ -346,20 +351,25 @@ export async function submit(opts: {
     }
   }
 
-  // 1. Post the comment with the umsemi prefix.
-  const body = comment.startsWith(ANALYSIS_PREFIX) ? comment : `${ANALYSIS_PREFIX} ${comment}`;
+  // 1. Post the comment. AI flow auto-prefixes with "Analyzed by Claude:";
+  //    manual flow posts the comment as-typed.
+  const body = manual
+    ? comment
+    : (comment.startsWith(ANALYSIS_PREFIX) ? comment : `${ANALYSIS_PREFIX} ${comment}`);
   const commentRes = await bzPost(`/rest/bug/${id}/comment`, { comment: body }) as { id?: number };
   const commentId = commentRes.id;
 
-  // 2. Append the "Analyzed by Claude" cf_label to whatever's already there.
+  // 2. Append the "Analyzed by Claude" cf_label — AI flow only.
   //    (PUT /rest/bug/{id} with cf_label set replaces the value, so we
   //    need to merge first.)
-  const currentLabelRes = await bzGet(`/rest/bug/${id}`, [["include_fields", "cf_label"]]) as { bugs?: Array<{ cf_label?: string }> };
-  const currentLabel = currentLabelRes.bugs?.[0]?.cf_label ?? "";
-  const labels = new Set(currentLabel.split(/[;,]\s*/).map(l => l.trim()).filter(Boolean));
-  labels.add(CLAUDE_LABEL);
-  const mergedLabel = Array.from(labels).join("; ");
-  await bzPut(`/rest/bug/${id}`, { cf_label: mergedLabel });
+  if (!manual) {
+    const currentLabelRes = await bzGet(`/rest/bug/${id}`, [["include_fields", "cf_label"]]) as { bugs?: Array<{ cf_label?: string }> };
+    const currentLabel = currentLabelRes.bugs?.[0]?.cf_label ?? "";
+    const labels = new Set(currentLabel.split(/[;,]\s*/).map(l => l.trim()).filter(Boolean));
+    labels.add(CLAUDE_LABEL);
+    const mergedLabel = Array.from(labels).join("; ");
+    await bzPut(`/rest/bug/${id}`, { cf_label: mergedLabel });
+  }
 
   // 3. Transition if requested.
   let newStatus: TicketStatus | undefined;
@@ -376,7 +386,9 @@ export async function submit(opts: {
     commentId,
     newStatus,
     postedAt: new Date().toISOString(),
-    message: `Posted to Bugzilla (label='${CLAUDE_LABEL}', prefix='${ANALYSIS_PREFIX}')`,
+    message: manual
+      ? "Posted to Bugzilla (manual triage — no Claude prefix or label)"
+      : `Posted to Bugzilla (label='${CLAUDE_LABEL}', prefix='${ANALYSIS_PREFIX}')`,
   };
 }
 
