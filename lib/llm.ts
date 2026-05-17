@@ -31,6 +31,7 @@ import OpenAI from "openai";
 
 import type { TicketDetail, TriageResult, SpecExcerpt } from "./types";
 import { loadSettings } from "./settings";
+import { lookupClause, type RetrievedClause } from "./corpus/retriever";
 
 // Default to Opus 4.7 per Anthropic guidance — the most capable model for
 // the kind of multi-layer domain reasoning (RF physics, 3GPP specs,
@@ -156,7 +157,11 @@ CONFIDENCE GUIDELINE:
 
 // ── User-prompt builder (port of build_user_prompt from Python) ──
 
-function buildUserPrompt(ticket: TicketDetail, followup?: string): string {
+function buildUserPrompt(
+  ticket: TicketDetail,
+  followup?: string,
+  retrievedClauses?: RetrievedClause[],
+): string {
   const parts: string[] = [];
 
   parts.push(`# Ticket #${ticket.id}: ${ticket.summary}`);
@@ -173,6 +178,28 @@ function buildUserPrompt(ticket: TicketDetail, followup?: string): string {
   parts.push("## Description / first comment");
   parts.push(ticket.description || "(empty)");
   parts.push("");
+
+  // 3GPP RAG context — top-K BM25 hits over the local Rel-17 corpus,
+  // injected as CANDIDATE references the model can choose to cite. We
+  // explicitly tell the model these are candidates so it doesn't blindly
+  // adopt every clause — BM25 on noisy ticket text occasionally pulls
+  // tangentially-relevant clauses, and the model is better at deciding
+  // semantic relevance than the keyword index is. When the corpus isn't
+  // installed `retrievedClauses` is empty/undefined and this section is
+  // skipped entirely.
+  if (retrievedClauses && retrievedClauses.length > 0) {
+    parts.push("## Reference spec excerpts (retrieved from local 3GPP Rel-17 corpus)");
+    parts.push("These are CANDIDATE references — cite them in specReferences ONLY when");
+    parts.push("genuinely relevant to your analysis. Do not fabricate clause numbers and");
+    parts.push("do not feel obliged to cite every candidate.");
+    parts.push("");
+    for (const c of retrievedClauses) {
+      parts.push(`### ${c.citation} — ${c.title}`);
+      if (c.parentTitle) parts.push(`(within: ${c.parentTitle})`);
+      parts.push(c.text);
+      parts.push("");
+    }
+  }
 
   // Skip first comment — it equals the description by Bugzilla convention.
   const followupComments = ticket.comments.slice(1, 9);
@@ -233,6 +260,13 @@ export interface TriageOptions {
   /** Defaults to process.env.ANTHROPIC_API_KEY. Milestone 3 (settings page)
    *  will pass a user-entered key here from encrypted local storage. */
   apiKey?: string;
+  /** Optional list of clauses retrieved from the local 3GPP corpus
+   *  (added in v0.1.6). When present, they're injected into the user
+   *  prompt as "## Reference spec excerpts" so the model can cite them
+   *  by canonical form rather than guessing from training data. The
+   *  triage API route at app/api/tickets/[id]/triage/route.ts calls
+   *  retrieveContext() on the ticket and passes the result through. */
+  retrievedClauses?: RetrievedClause[];
 }
 
 export async function runTriage(
@@ -249,7 +283,7 @@ export async function runTriage(
   }
   const model = opts.model || s.defaultModel || DEFAULT_MODEL;
   const baseURL = s.llmBaseUrl?.trim() || undefined;
-  const userPrompt = buildUserPrompt(ticket, opts.followup);
+  const userPrompt = buildUserPrompt(ticket, opts.followup, opts.retrievedClauses);
 
   const common = { apiKey, baseURL, model, userPrompt, ticketId: ticket.id };
   if (s.llmProvider === "openai-compatible") {
@@ -307,11 +341,11 @@ async function runTriageAnthropic(args: ProviderCallArgs): Promise<TriageResult>
     generatedAt: new Date().toISOString(),
     model: response.model || model,
   } as TriageResult;
-  // Server-side prepend so the final bugzillaComment opens with a
-  // structured CLASSIFICATION header built from the parsed fields,
-  // regardless of what the model itself wrote. See prependClassification()
-  // below for the rendering rules.
-  return withClassificationPrepended(result);
+  // Enrich excerpts with corpus lookups BEFORE the CLASSIFICATION
+  // header is rendered — the header prefers realText (corpus) over
+  // summary (model paraphrase) when both are present. When the corpus
+  // isn't installed, enrichExcerptsWithCorpus is a no-op.
+  return withClassificationPrepended(enrichExcerptsWithCorpus(result));
 }
 
 // ── OpenAI-compatible path ────────────────────────────────────────
@@ -383,7 +417,9 @@ async function runTriageOpenAI(args: ProviderCallArgs): Promise<TriageResult> {
   // UI from crashing while still surfacing the model's actual output where
   // it provided one.
   const filled = fillTriageDefaults(parsed, ticketId, response.model || model);
-  return withClassificationPrepended(filled);
+  // Enrich BEFORE prepending CLASSIFICATION — header rendering prefers
+  // realText (corpus) over summary (model paraphrase).
+  return withClassificationPrepended(enrichExcerptsWithCorpus(filled));
 }
 
 /** Strip a leading ```json … ``` fence if the model included one despite
@@ -489,22 +525,29 @@ function renderClassificationHeader(t: TriageResult): string {
   if (t.specReferences.length > 0) {
     lines.push("");
     lines.push("Spec references:");
-    // Match excerpt-by-clause; missing excerpts are fine, we just print
-    // the clause alone in that case.
-    const excerptByClause = new Map<string, string>();
+    // Map clause → excerpt object so we can prefer realText (from the
+    // local 3GPP corpus, populated by enrichExcerptsWithCorpus) over
+    // summary (model paraphrase). Missing excerpts are fine, we just
+    // print the clause alone in that case.
+    const byClause = new Map<string, SpecExcerpt>();
     for (const e of t.specExcerpts) {
-      if (e?.clause && e.summary) excerptByClause.set(e.clause.trim(), e.summary.trim());
+      if (e?.clause) byClause.set(e.clause.trim(), e);
     }
     for (const ref of t.specReferences) {
       const clause = ref.trim();
       if (!clause) continue;
       lines.push(`  · ${clause}`);
-      const summary = excerptByClause.get(clause);
-      if (summary) {
-        // Indent the summary under the bullet for readability.
-        for (const ln of summary.split(/\r?\n/)) {
-          lines.push(`    ${ln}`);
-        }
+      const excerpt = byClause.get(clause);
+      if (!excerpt) continue;
+      // Prefer the corpus's authoritative text when available — render
+      // the first ~280 chars as the header summary (the side-drawer at
+      // M3 will show the full text on demand). The leading "[corpus]"
+      // tag is a small honesty cue distinguishing real spec text from
+      // the model's paraphrase.
+      const bodyText = pickHeaderBody(excerpt);
+      if (!bodyText) continue;
+      for (const ln of bodyText.split(/\r?\n/)) {
+        lines.push(`    ${ln}`);
       }
     }
   }
@@ -512,4 +555,85 @@ function renderClassificationHeader(t: TriageResult): string {
   lines.push("");
   lines.push("──────────────────────────────────────────────────────────────");
   return lines.join("\n");
+}
+
+/** Pick the best short text to render under a clause in the CLASSIFICATION
+ *  header. Order of preference:
+ *    1. First sentence-or-two (~280 chars) of `realText` from the corpus
+ *    2. The model's `summary` paraphrase
+ *    3. Empty (just print the bare clause line)
+ *  Annotated with a "[corpus]" / "[ai paraphrase]" tag so the debugger
+ *  knows which they're looking at. */
+function pickHeaderBody(e: SpecExcerpt): string | null {
+  const real = (e.realText || "").trim();
+  if (real) {
+    const condensed = condenseForHeader(real);
+    return `[corpus] ${condensed}`;
+  }
+  const summary = (e.summary || "").trim();
+  if (summary) return `[ai paraphrase] ${summary}`;
+  return null;
+}
+
+/** Trim a long clause body to a header-friendly snippet. Tries to cut at
+ *  the end of a sentence within the first 280 chars; otherwise hard-cuts
+ *  with an ellipsis. */
+function condenseForHeader(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= 280) return flat;
+  // Look for a sentence-end within the first 280 chars.
+  const window = flat.slice(0, 280);
+  const lastSentence = Math.max(
+    window.lastIndexOf(". "),
+    window.lastIndexOf("? "),
+    window.lastIndexOf("! "),
+  );
+  if (lastSentence > 120) return window.slice(0, lastSentence + 1);
+  return window + "…";
+}
+
+/** Walk specReferences and, for each, try a corpus lookup. When a hit
+ *  is found, attach `clauseId` / `title` / `parentTitle` / `realText` to
+ *  the matching specExcerpts entry (creating one if the model didn't
+ *  produce a paraphrase for that clause). Sets `source` so downstream
+ *  UI can color/tag the excerpt accordingly.
+ *
+ *  No-op when the corpus isn't installed (lookupClause returns null for
+ *  every reference). Pure function — returns a new TriageResult. */
+function enrichExcerptsWithCorpus(t: TriageResult): TriageResult {
+  if (!t.specReferences || t.specReferences.length === 0) return t;
+
+  // Index the model's existing excerpts by clause for fast merge.
+  const byClause = new Map<string, SpecExcerpt>();
+  for (const e of t.specExcerpts ?? []) {
+    if (e?.clause) byClause.set(e.clause.trim(), e);
+  }
+
+  for (const ref of t.specReferences) {
+    const clause = ref.trim();
+    if (!clause) continue;
+    const hit = lookupClause(clause);
+    if (!hit) {
+      // No corpus match — tag whatever the model produced so the UI can
+      // distinguish "model-only" from "corpus-backed" excerpts later.
+      const existing = byClause.get(clause);
+      if (existing && !existing.source) {
+        byClause.set(clause, { ...existing, source: "model" });
+      }
+      continue;
+    }
+    const existing = byClause.get(clause);
+    const merged: SpecExcerpt = {
+      clause,
+      summary: existing?.summary || "",
+      clauseId: hit.clauseId,
+      title: hit.title,
+      parentTitle: hit.parentTitle,
+      realText: hit.text,
+      source: existing?.summary ? "corpus+model" : "corpus",
+    };
+    byClause.set(clause, merged);
+  }
+
+  return { ...t, specExcerpts: Array.from(byClause.values()) };
 }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { bridgeFetch, bridgeTriage } from "@/lib/bridge";
 import { buildMockDetail } from "@/lib/mock-data";
+import { retrieveContext } from "@/lib/corpus/retriever";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -37,10 +38,28 @@ export async function POST(
     }
   }
 
-  // Step 2: invoke Claude Code via headless CLI
+  // Step 2: retrieve candidate 3GPP clauses (v0.1.6 RAG). Wrapped in
+  // try/catch and graceful no-op so a missing/broken corpus never
+  // breaks triage — the model just falls back to its training-data
+  // paraphrase like in v0.1.5.
+  let retrievedClauses: ReturnType<typeof retrieveContext> = [];
   try {
-    const { triage } = await bridgeTriage(ticket, { model, timeoutMs: 270_000 });
-    return NextResponse.json({ triage, source });
+    retrievedClauses = retrieveContext(ticket);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(`[triage] corpus retrieval failed (continuing without RAG):`, err);
+  }
+
+  // Step 3: invoke the LLM with retrieved-clause context. Post-triage
+  // enrichment (looking up the model's specReferences against the corpus
+  // to populate realText) is handled inside runTriage().
+  try {
+    const { triage } = await bridgeTriage(ticket, { model, timeoutMs: 270_000, retrievedClauses });
+    return NextResponse.json({
+      triage,
+      source,
+      retrievedClauseCount: retrievedClauses.length,
+    });
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 502 });
   }

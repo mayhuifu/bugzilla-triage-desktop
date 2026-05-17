@@ -50,6 +50,15 @@ export async function POST(req: NextRequest) {
     anthropicApiKey: body.anthropicApiKey?.trim() || current.anthropicApiKey,
     defaultModel: (body.defaultModel ?? current.defaultModel).trim() || "claude-opus-4-7",
     themeMode,
+    // Corpus fields. corpusManifestUrl may be intentionally edited by China
+    // users to a SharePoint mirror; trim/normalize but otherwise pass through.
+    // corpusVersion is internal — only the download flow writes to it;
+    // accept whatever the UI sends (typically "" via the omitted field).
+    corpusManifestUrl: (body.corpusManifestUrl ?? current.corpusManifestUrl).trim(),
+    corpusVersion: (body.corpusVersion ?? current.corpusVersion).trim(),
+    corpusAutoUpdate: typeof body.corpusAutoUpdate === "boolean"
+      ? body.corpusAutoUpdate
+      : current.corpusAutoUpdate,
   };
 
   const errors = validateSettings(next);

@@ -69,12 +69,40 @@ export interface Settings {
 
   // ── Appearance ─────────────────────────────────────────────────
   themeMode: ThemeMode;         // "system" follows prefers-color-scheme
+
+  // ── 3GPP RAG corpus (added in v0.1.6) ──────────────────────────
+  // The desktop app downloads a SQLite spec corpus on user opt-in so AI
+  // triage can cite real 3GPP clause text instead of model paraphrase.
+  // All three fields are optional and gracefully degrade when unset.
+  /** URL of the corpus manifest JSON. Defaults to the GitHub Releases
+   *  manifest published from the bugzilla-triage-corpus repo. Users in
+   *  GitHub-blocked networks (e.g. mainland China) override this to point
+   *  at an internal mirror (SharePoint, Confluence, S3, etc.) — the
+   *  manifest's `url` field then determines where the actual .sqlite.gz
+   *  is fetched from, so the override flows through. */
+  corpusManifestUrl: string;
+  /** The corpus version currently installed on this machine, e.g.
+   *  "rel17-v1". Compared against the remote manifest's `tag` field to
+   *  detect when an update is available. Empty when nothing is installed. */
+  corpusVersion: string;
+  /** When true, on app launch the manifest is fetched and a newer version
+   *  is downloaded automatically. v0.1.6 keeps this OFF by default — the
+   *  user opts in via Settings → "Check for updates" instead. */
+  corpusAutoUpdate: boolean;
 }
 
 interface StoredEnvelope {
   version: number;
   settings: Settings;
 }
+
+/** Default corpus manifest URL — the published rel17-v1 manifest on
+ *  github.com/mayhuifu/bugzilla-triage-corpus. Users in regions where
+ *  GitHub is blocked (e.g. mainland China) override this in Settings to
+ *  point at an internal mirror (SharePoint / Confluence / S3) hosting
+ *  the same manifest+sqlite.gz pair. */
+const DEFAULT_CORPUS_MANIFEST_URL =
+  "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v1/3gpp-corpus-rel17-v1-2026-05.manifest.json";
 
 const EMPTY_SETTINGS: Settings = {
   bugzillaUrl: "",
@@ -86,6 +114,9 @@ const EMPTY_SETTINGS: Settings = {
   anthropicApiKey: "",
   defaultModel: "claude-opus-4-7",
   themeMode: "system",
+  corpusManifestUrl: DEFAULT_CORPUS_MANIFEST_URL,
+  corpusVersion: "",
+  corpusAutoUpdate: false,
 };
 
 // ── Where the file lives ──────────────────────────────────────────
@@ -94,7 +125,7 @@ const EMPTY_SETTINGS: Settings = {
  * Electron's `app.getPath("userData")` will produce in milestone 4,
  * so settings written now will still be found after we wrap in
  * Electron. */
-function appDataDir(): string {
+export function appDataDir(): string {
   const platform = os.platform();
   const home = os.homedir();
   if (platform === "win32") {
@@ -146,6 +177,9 @@ function envSettings(): Settings {
       (llmProvider === "openai-compatible" ? process.env.OPENAI_API_KEY || "" : ""),
     defaultModel: process.env.TRIAGE_MODEL || "claude-opus-4-7",
     themeMode,
+    corpusManifestUrl: (process.env.CORPUS_MANIFEST_URL || DEFAULT_CORPUS_MANIFEST_URL).trim(),
+    corpusVersion: process.env.CORPUS_VERSION || "",
+    corpusAutoUpdate: (process.env.CORPUS_AUTO_UPDATE || "false").toLowerCase() === "true",
   };
 }
 
@@ -244,6 +278,9 @@ export interface SettingsForUi {
   llmBaseUrl: string;
   defaultModel: string;
   themeMode: ThemeMode;
+  corpusManifestUrl: string;
+  corpusVersion: string;
+  corpusAutoUpdate: boolean;
   hasBugzillaApiKey: boolean;
   hasAnthropicApiKey: boolean;     // legacy name — really "has LLM key set"
   filePath: string;
@@ -258,6 +295,9 @@ export function settingsForUi(s: Settings): SettingsForUi {
     llmBaseUrl: s.llmBaseUrl,
     defaultModel: s.defaultModel,
     themeMode: s.themeMode,
+    corpusManifestUrl: s.corpusManifestUrl,
+    corpusVersion: s.corpusVersion,
+    corpusAutoUpdate: s.corpusAutoUpdate,
     hasBugzillaApiKey: Boolean(s.bugzillaApiKey),
     hasAnthropicApiKey: Boolean(s.anthropicApiKey),
     filePath: settingsPath(),

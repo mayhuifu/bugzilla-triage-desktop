@@ -8,6 +8,9 @@
   },
   "compression": "maximum",
   "asar": true,
+  "asarUnpack": [
+    "**/*.node"
+  ],
 
   "files": [
     "electron/**/*",
@@ -28,6 +31,21 @@
     {
       "from": ".next/static",
       "to": "app/.next/standalone/.next/static",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "node_modules/better-sqlite3",
+      "to": "app/.next/standalone/node_modules/better-sqlite3",
+      "filter": ["**/*", "!build/Release/obj.target/**", "!build/Release/.deps/**", "!deps/**", "!src/**", "!**/*.tar.gz"]
+    },
+    {
+      "from": "node_modules/bindings",
+      "to": "app/.next/standalone/node_modules/bindings",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "node_modules/file-uri-to-path",
+      "to": "app/.next/standalone/node_modules/file-uri-to-path",
       "filter": ["**/*"]
     }
   ],

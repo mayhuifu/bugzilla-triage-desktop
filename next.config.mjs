@@ -17,6 +17,12 @@ const nextConfig = {
   // server payload electron-builder ships inside the Windows installer.
   // No system Node install needed at runtime.
   output: "standalone",
+  // Native modules must NOT be bundled by webpack — they must be loaded
+  // at runtime via require(). better-sqlite3 ships a per-platform .node
+  // binary that the bundler can't process. Telling Next.js to externalize
+  // it preserves the require() resolution from .next/standalone/node_modules
+  // where electron-builder will unpack the prebuild.
+  serverExternalPackages: ["better-sqlite3"],
   env: {
     NEXT_PUBLIC_APP_VERSION: pkg.version,
   },

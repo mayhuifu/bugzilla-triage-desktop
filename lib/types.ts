@@ -130,6 +130,30 @@ export interface SpecExcerpt {
    *  from the model's knowledge. Editable in the UI; the user can refine
    *  before submission. */
   summary: string;
+
+  // ── v0.1.6 additions — populated server-side when the 3GPP RAG
+  // corpus is installed and the clause is found. All optional so the
+  // schema stays backwards-compatible with v0.1.5 settings and with
+  // the model's raw output (which only fills `clause` + `summary`).
+
+  /** Canonical id used by the corpus retriever, e.g. "38.211#6.1.4".
+   *  Set when the clause was matched in the corpus; null/undefined
+   *  when the corpus isn't installed or the citation didn't parse. */
+  clauseId?: string;
+  /** The clause's own title from the spec, e.g. "Generation of reference signal". */
+  title?: string;
+  /** Title of the immediate parent section, e.g. "Physical channel processing".
+   *  Used by the side-drawer (M3) to render breadcrumb context. */
+  parentTitle?: string;
+  /** The actual clause text from the 3GPP corpus. The renderClassification-
+   *  Header function prefers the first 2 sentences of this over `summary`
+   *  when present. Editable in the UI like `summary`. */
+  realText?: string;
+  /** Where the excerpt came from:
+   *  - "model"        — paraphrase only; corpus not consulted or clause missing
+   *  - "corpus"       — both summary and realText set; UI shows realText
+   *  - "corpus+model" — model paraphrase + corpus realText both available */
+  source?: "model" | "corpus" | "corpus+model";
 }
 
 export interface TriageSubmission {

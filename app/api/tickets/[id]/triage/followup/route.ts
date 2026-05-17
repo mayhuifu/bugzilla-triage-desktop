@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { bridgeFetch, bridgeTriage } from "@/lib/bridge";
 import { buildMockDetail } from "@/lib/mock-data";
+import { retrieveContext } from "@/lib/corpus/retriever";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -29,11 +30,24 @@ export async function POST(
     ticket = buildMockDetail(ticketId);
   }
 
+  // Re-run retrieval on the (unchanged) ticket text so the refined
+  // triage gets the same candidate clauses. The followup instruction
+  // alone isn't a strong enough signal to re-rank — the user is
+  // tweaking interpretation, not changing the underlying issue.
+  let retrievedClauses: ReturnType<typeof retrieveContext> = [];
+  try {
+    retrievedClauses = retrieveContext(ticket);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(`[triage/followup] corpus retrieval failed (continuing without RAG):`, err);
+  }
+
   try {
     const { triage } = await bridgeTriage(ticket, {
       followup: instruction,
       model,
       timeoutMs: 270_000,
+      retrievedClauses,
     });
     return NextResponse.json({ triage });
   } catch (err) {
