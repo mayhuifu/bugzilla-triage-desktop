@@ -1,3 +1,14 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+// Read the version from package.json at build time so it can be shown
+// in the UI (next to the Logo). `process.env.NEXT_PUBLIC_*` is the
+// canonical Next.js mechanism for build-time injection that's safe to
+// read from both server and client components.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(path.join(__dirname, "package.json"), "utf8"));
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -6,6 +17,9 @@ const nextConfig = {
   // server payload electron-builder ships inside the Windows installer.
   // No system Node install needed at runtime.
   output: "standalone",
+  env: {
+    NEXT_PUBLIC_APP_VERSION: pkg.version,
+  },
 };
 
 export default nextConfig;
