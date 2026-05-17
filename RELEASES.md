@@ -12,10 +12,32 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
-## v0.1.8 — Triage UX polish + RAG opt-in & transparency
+## v0.1.9 — v0.1.8 features + CI fix (better-sqlite3 native rebuild)
 
 **Tagged:** 2026-05-17  
 **Published:** —
+
+### Highlights
+
+Same user-facing changes as v0.1.8 (see below — RAG opt-in toggle, retrieval transparency, prompt fix that restored model citations, neutral branding). v0.1.8's CI failed to produce installers because `@electron/rebuild` tried to compile `better-sqlite3@12.x` from source against Electron 42's V8 13 headers — the macOS native rebuild fails with `'Value' declared here` errors (V8 dropped the zero-arg `External::Value()` signature in favor of `Value(tag)`). The same failure quietly broke v0.1.6 and v0.1.7's CI too — none of those tags ever shipped artifacts.
+
+### CI / build changes
+
+- `electron-builder.json` — added `"npmRebuild": false`. The prebuilt N-API binary fetched by `npm install` is ABI-stable across Node and Electron runtimes; we don't need to (and can't, on current Electron) rebuild from source. Local builds and CI both rely on this prebuild now.
+- `electron-builder.json` — Mac target arch list is `["arm64"]` only (was `["arm64", "x64"]`). With `npmRebuild: false`, electron-builder packages whatever native binary is in `node_modules` — that's the host arch's prebuild, which is `darwin-arm64` on the CI's `macos-latest` runner. **Intel Mac installer is dropped for v0.1.9** — re-fetch instructions for an x64 binary will return in a later release.
+- `.github/workflows/release.yml` — `strategy.fail-fast: false`. Previously one platform's failure cancelled the others; now Windows / Linux / Mac builds are independent, so a single-platform regression doesn't block the rest.
+
+### Upgrade notes
+
+- **Intel Mac users:** v0.1.8 was unbuildable, so the last working Intel Mac installer is **v0.1.4**. v0.1.9 ships arm64 only; Intel support will return after we figure out cross-arch native-binary fetching in CI.
+- v0.1.8 tag remains in git history but its CI never produced installers — treat it as a broken intermediate.
+
+### Everything below this section was originally drafted for v0.1.8 — same behavior changes apply
+
+## v0.1.8 — Triage UX polish + RAG opt-in & transparency
+
+**Tagged:** 2026-05-17  
+**Published:** Never — CI failure (better-sqlite3 native rebuild against Electron 42 V8 13 headers). Features rolled forward into v0.1.9.
 
 ### Highlights
 

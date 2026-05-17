@@ -22,6 +22,12 @@ permissions:
 jobs:
   build:
     strategy:
+      # When one platform fails, keep building the others. CI failures on
+      # a single OS shouldn't block shipping installers for the remaining
+      # platforms — the user can publish a partial release while we fix
+      # the broken one. (Added in v0.1.9 after macOS native-rebuild
+      # failures cancelled Windows + Linux builds three releases running.)
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest

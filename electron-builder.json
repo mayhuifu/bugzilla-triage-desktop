@@ -11,6 +11,7 @@
   "asarUnpack": [
     "**/*.node"
   ],
+  "npmRebuild": false,
 
   "files": [
     "electron/**/*",
@@ -74,7 +75,7 @@
     "target": [
       {
         "target": "dmg",
-        "arch": ["arm64", "x64"]
+        "arch": ["arm64"]
       }
     ],
     "icon": "build/icon.png",
