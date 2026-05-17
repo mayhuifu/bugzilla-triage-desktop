@@ -47,6 +47,16 @@ By default, the AI panel on the ticket detail page is unavailable. To turn it on
 
 AI calls are billed against **your own Anthropic account** — your key, your spend. The app never sends your data to anyone but Bugzilla and Anthropic.
 
+### 4. (Optional) Install the 3GPP spec corpus
+
+Added in v0.1.6. When installed, AI triage cites **real** spec text from a local Release-17 NR + LTE corpus (5,631 clauses · ~40 MB on disk) instead of relying on the model's training-data paraphrase. Click any reference and a side drawer opens with the full clause.
+
+In **Settings → 3GPP spec corpus**, click **Download corpus**. The artifact (~10 MB gzipped) downloads from this app's [sibling corpus repo](https://github.com/mayhuifu/bugzilla-triage-corpus) on GitHub Releases. SHA-256 is verified before install.
+
+**For users behind GitHub-blocked networks (e.g. mainland China):** override the **Manifest URL** field to point at an internal mirror (SharePoint, Confluence, S3). The manifest's `artifact.url` field is followed transitively, so a single override redirects both the manifest and the corpus to your internal copy.
+
+Triage works perfectly well without the corpus — the model paraphrase from v0.1.5 is the graceful fallback.
+
 ### Where your settings live
 
 The app writes to a single per-user JSON file. **Nothing else** is stored anywhere on disk.
@@ -217,13 +227,21 @@ For most users the Settings page is all you need. The fields below are useful if
     "bugzillaApiKey": "40-character-api-key",
     "bugzillaInsecure": true,
     "bugzillaLogin": "user@example.com",
+    "llmProvider": "anthropic",
+    "llmBaseUrl": "",
     "anthropicApiKey": "sk-ant-…",
-    "defaultModel": "claude-opus-4-7"
+    "defaultModel": "claude-opus-4-7",
+    "themeMode": "system",
+    "corpusManifestUrl": "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v1/3gpp-corpus-rel17-v1-2026-05.manifest.json",
+    "corpusVersion": "",
+    "corpusAutoUpdate": false
   }
 }
 ```
 
 Write this file at the OS-appropriate path above with permissions `0600`, then launch the app — it'll pick it up on first run and skip the setup banner.
+
+The **3GPP spec corpus** itself (~40 MB SQLite) lives separately under `<userData>/corpus/corpus.sqlite` and is downloaded on user opt-in. IT admins pre-deploying to many machines can either pre-populate that file from a known-good source, or set `corpusManifestUrl` to an internal mirror so the in-app download flow reads from there.
 
 ### Environment-variable fallbacks (dev only)
 
@@ -235,8 +253,15 @@ For local development without writing `settings.json`, the server falls back to 
 | `BUGZILLA_API_KEY` | `bugzillaApiKey` |
 | `BUGZILLA_INSECURE` | `bugzillaInsecure` (defaults to `true`) |
 | `BUGZILLA_LOGIN` | `bugzillaLogin` |
-| `ANTHROPIC_API_KEY` | `anthropicApiKey` |
+| `LLM_PROVIDER` | `llmProvider` (`anthropic` / `openai-compatible`) |
+| `LLM_BASE_URL` | `llmBaseUrl` |
+| `ANTHROPIC_API_KEY` | `anthropicApiKey` (legacy name — stores any LLM key) |
+| `OPENAI_API_KEY` | fallback to `anthropicApiKey` when `LLM_PROVIDER=openai-compatible` |
 | `TRIAGE_MODEL` | `defaultModel` |
+| `THEME_MODE` | `themeMode` (`system` / `light` / `dark`) |
+| `CORPUS_MANIFEST_URL` | `corpusManifestUrl` (override the default GitHub URL for China mirrors etc.) |
+| `CORPUS_VERSION` | `corpusVersion` (pin a specific corpus version for testing) |
+| `CORPUS_AUTO_UPDATE` | `corpusAutoUpdate` (`true`/`false`) |
 | `SETTINGS_PATH` | overrides the on-disk file path entirely |
 | `PORT` | port the Next.js standalone server listens on (default 3000) |
 

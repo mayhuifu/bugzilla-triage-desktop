@@ -7,6 +7,7 @@ import {
   Database, Bot, Lock, Zap, Monitor, Sun, Moon, Palette,
 } from "lucide-react";
 import { Logo } from "@/components/ui/Logo";
+import { CorpusSection } from "@/components/settings/CorpusSection";
 
 // Settings page — first thing a non-technical user sees on a fresh
 // install. Two sections (Bugzilla, AI Triage) plus the on-disk file
@@ -28,6 +29,9 @@ interface SettingsView {
   llmBaseUrl: string;
   defaultModel: string;
   themeMode: ThemeMode;
+  corpusManifestUrl: string;
+  corpusVersion: string;
+  corpusAutoUpdate: boolean;
   hasBugzillaApiKey: boolean;
   hasAnthropicApiKey: boolean;
   filePath: string;
@@ -75,6 +79,11 @@ export default function SettingsPage() {
   const [llmBaseUrl, setLlmBaseUrl] = useState("");
   const [modelMode, setModelMode] = useState<"known" | "custom">("known");
   const [themeMode, setThemeMode] = useState<ThemeMode>("system");
+  // Corpus manifest URL — China users override this to point at an
+  // internal SharePoint mirror. The CorpusSection card lets them edit
+  // the value inline and trigger a download against the new URL; the
+  // change persists alongside the rest of the settings on Save.
+  const [corpusManifestUrl, setCorpusManifestUrl] = useState("");
 
   // Initial load.
   useEffect(() => {
@@ -89,6 +98,7 @@ export default function SettingsPage() {
         setLlmBaseUrl(v.llmBaseUrl);
         setDefaultModel(v.defaultModel);
         setThemeMode(v.themeMode);
+        setCorpusManifestUrl(v.corpusManifestUrl);
         // If the stored model isn't a known Anthropic preset, drop the
         // dropdown into "custom" mode so the user sees what's persisted.
         setModelMode(
@@ -145,6 +155,7 @@ export default function SettingsPage() {
           bugzillaUrl, bugzillaApiKey, bugzillaInsecure, bugzillaLogin,
           llmProvider, llmBaseUrl, anthropicApiKey, defaultModel,
           themeMode,
+          corpusManifestUrl,
         }),
       });
       const data = await res.json();
@@ -171,6 +182,7 @@ export default function SettingsPage() {
   }, [
     bugzillaUrl, bugzillaApiKey, bugzillaInsecure, bugzillaLogin,
     llmProvider, llmBaseUrl, anthropicApiKey, defaultModel, themeMode,
+    corpusManifestUrl,
   ]);
 
   return (
@@ -448,6 +460,12 @@ export default function SettingsPage() {
                 </div>
               </Field>
             </section>
+
+            {/* ── 3GPP spec corpus (optional) ─────────────────── */}
+            <CorpusSection
+              manifestUrl={corpusManifestUrl}
+              onManifestUrlChange={setCorpusManifestUrl}
+            />
 
             {/* ── Appearance ─────────────────────────────────── */}
             <section className="card p-5 space-y-4">

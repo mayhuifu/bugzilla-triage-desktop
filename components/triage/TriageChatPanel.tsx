@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Sparkles, Send, Loader2, ShieldCheck, Lock, AlertTriangle, RefreshCw,
   ListChecks, Lightbulb, MessageCircleQuestion, AlertOctagon, FileText,
-  Pencil,
+  Pencil, BookText,
 } from "lucide-react";
 import type { TriageResult, TicketStatus, SubmissionReceipt } from "@/lib/types";
 import { ConfidenceBadge } from "@/components/ui/Badge";
@@ -12,6 +12,7 @@ import { pushToast } from "@/components/ui/Toast";
 import { ChatBubble } from "@/components/triage/ChatBubble";
 import { EditableField, EditableTextarea } from "@/components/triage/EditableField";
 import { StepIndicator, type StepState } from "@/components/triage/StepIndicator";
+import { SpecDrawer } from "@/components/triage/SpecDrawer";
 
 interface Props {
   ticketId: number;
@@ -73,6 +74,9 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
   const autoRanRef = useRef(false);
   const endRef = useRef<HTMLDivElement>(null);
   const turnSeqRef = useRef(0);
+  // SpecDrawer state: when set, the right-side drawer is open and
+  // showing the clause whose citation matches this string. Null = closed.
+  const [openClause, setOpenClause] = useState<string | null>(null);
 
   const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -315,18 +319,83 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
                 {t.specReferences.map((ref, i) => {
                   const excerptIdx = t.specExcerpts.findIndex(e => e.clause === ref);
                   const excerpt = excerptIdx >= 0 ? t.specExcerpts[excerptIdx] : undefined;
+                  // Corpus-backed excerpts (M2) carry a clauseId — that
+                  // gates the "View clause" button which opens the
+                  // SpecDrawer. When the corpus isn't installed or the
+                  // citation isn't in it, the button is hidden.
+                  const hasCorpus = !!excerpt?.clauseId;
+                  // Pre-fill the editable textarea from realText (corpus)
+                  // when present, falling back to the model's summary.
+                  // This lets the user refine the corpus text inline
+                  // before submission, while the drawer always shows
+                  // the original full clause.
+                  const editableText = excerpt
+                    ? (excerpt.realText || excerpt.summary)
+                    : "";
+                  const sourceTag = excerpt?.source === "corpus" || excerpt?.source === "corpus+model"
+                    ? "[corpus]"
+                    : excerpt?.source === "model"
+                      ? "[ai paraphrase]"
+                      : null;
                   return (
                     <div key={`${t.generatedAt}-spec-${i}`} className="bg-bg-panel/40 rounded-lg p-2 border border-bg-border/40">
-                      <div className="text-[11px] font-mono text-slate-300 mb-1">{ref}</div>
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <div className="text-[11px] font-mono text-slate-300 break-words flex-1 min-w-0">{ref}</div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {sourceTag && (
+                            <span
+                              className={`text-[9px] font-mono uppercase tracking-wider px-1.5 py-px rounded ${
+                                excerpt?.source?.startsWith("corpus")
+                                  ? "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30"
+                                  : "bg-bg-hover text-slate-400 ring-1 ring-bg-border"
+                              }`}
+                              title={
+                                excerpt?.source === "corpus+model"
+                                  ? "Corpus text + model paraphrase available"
+                                  : excerpt?.source === "corpus"
+                                    ? "Real text from the local 3GPP Rel-17 corpus"
+                                    : "Model-generated paraphrase only — no corpus match"
+                              }
+                            >
+                              {sourceTag}
+                            </span>
+                          )}
+                          {hasCorpus && (
+                            <button
+                              type="button"
+                              onClick={() => setOpenClause(ref)}
+                              className="text-[10px] text-accent-glow hover:underline flex items-center gap-0.5"
+                              title="View full clause from the local corpus"
+                            >
+                              <BookText className="w-3 h-3" />
+                              View clause
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {/* Show the clause title under the citation when
+                          we have it from corpus enrichment. */}
+                      {excerpt?.title && (
+                        <div className="text-[10px] text-slate-500 mb-1 truncate" title={excerpt.title}>
+                          {excerpt.title}
+                          {excerpt.parentTitle && ` · ${excerpt.parentTitle}`}
+                        </div>
+                      )}
                       {excerpt ? (
                         <EditableTextarea
-                          value={excerpt.summary}
+                          value={editableText}
                           onChange={v => {
                             const next = [...t.specExcerpts];
-                            next[excerptIdx] = { ...excerpt, summary: v };
+                            // Editing the textarea overwrites whichever
+                            // field is currently authoritative — keep
+                            // both fields in sync so submission picks up
+                            // the user's intent regardless of which
+                            // header-builder branch fires.
+                            const field = excerpt.realText ? "realText" : "summary";
+                            next[excerptIdx] = { ...excerpt, [field]: v };
                             updateTriage({ specExcerpts: next });
                           }}
-                          rows={2}
+                          rows={hasCorpus ? 4 : 2}
                           className="text-[11px] text-slate-400 leading-snug"
                         />
                       ) : (
@@ -681,6 +750,9 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
   // ─────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col h-full">
+      {/* SpecDrawer overlay — rendered at the panel root so it covers
+          the right aside without disturbing the chat layout below. */}
+      <SpecDrawer citation={openClause} onClose={() => setOpenClause(null)} />
       {/* Header */}
       <div className="glass rounded-xl p-3 mb-3 space-y-2 sticky top-0 z-10">
         <div className="flex items-center gap-2">

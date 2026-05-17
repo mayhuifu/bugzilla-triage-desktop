@@ -53,6 +53,22 @@ Every `/api/tickets*` route catches bridge errors and returns mock data with a `
 
 `POST /api/tickets/:id/submit` is the only endpoint that **mutates** Bugzilla. The comment body is piped via a tmp file to avoid shell-arg length limits ([lib/bridge.ts:132-150](lib/bridge.ts:132)). The Python skill auto-prefixes `"Analyzed by AI Triage Bot:"` and adds the `"Analyzed by AI Triage Bot"` `cf_label`, so the model is told **not** to include either in `bugzillaComment` — adding them in TS would double-prefix. (Both strings were `"Analyzed by Claude…"` up through v0.1.2; renamed in v0.1.3.)
 
+### 3GPP RAG corpus (added v0.1.6 / v0.1.7)
+
+The AI triage path enriches model output with real spec text from a downloadable SQLite corpus (Release-17 NR + LTE, 5,631 clauses, FTS5 BM25). Source of truth for the corpus build lives in a **separate repo** [bugzilla-triage-corpus](https://github.com/mayhuifu/bugzilla-triage-corpus) — that's where DOCX parsing, chunking, and the artifact-publish pipeline run.
+
+In this app, `lib/corpus/` holds the runtime read-only consumer:
+- `store.ts`: lazy `better-sqlite3` singleton, opens `<userData>/corpus/corpus.sqlite` when present, returns `null` when absent (every caller graceful-no-ops)
+- `retriever.ts`: `retrieveContext(ticket)` for pre-triage BM25 (top-K=6, OR-joined query because FTS5's default AND is too restrictive for noisy tickets) + `lookupClause(citation)` for post-triage exact-match enrichment
+- `downloader.ts`: streams the corpus from a configurable `corpusManifestUrl`, sha256-verifies, gunzips, atomically renames into place
+- `manifest.ts`: local sidecar + remote manifest fetch + tag comparison for update detection
+
+The retrieval is glued into the triage pipeline at two points: `app/api/tickets/[id]/triage/route.ts` calls `retrieveContext` before the LLM and passes results through to `runTriage`, which injects them into the user prompt and (after parse) calls `enrichExcerptsWithCorpus` to look up each cited reference. The `SpecExcerpt` type in `lib/types.ts` now has optional `realText` / `title` / `parentTitle` / `clauseId` / `source` fields that get populated by the corpus path.
+
+The `corpusManifestUrl` setting is the China-friendliness lever: GitHub is blocked in mainland China, so the user can override the default GH Releases URL to an internal mirror (SharePoint, S3, Confluence). The manifest's `artifact.url` field flows transitively, so a single override redirects both the manifest and the corpus.
+
+The native binding (`better-sqlite3`'s `.node` file) is shipped via electron-builder's `asarUnpack` + explicit `extraResources` entries — don't refactor `electron-builder.json` without preserving those.
+
 ## Conventions
 
 - `@/*` alias maps to repo root (see `tsconfig.json`).
