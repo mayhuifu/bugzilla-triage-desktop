@@ -48,6 +48,47 @@
     --slate-800: 226 232 240;  /* slate-200 */
     --slate-900: 241 245 249;  /* slate-100 */
     --slate-950: 248 250 252;  /* slate-50 */
+
+    /* Accent shades: 300/400 are the LIGHT shades used as "colored text on
+       tinted bg" in dark mode. On light bg they're invisible. Override
+       them to deep shades that contrast on white. The 700 shade is the
+       canonical "deep text" — kept as itself. The -950 shades override
+       the rare "dark surface" backgrounds (e.g. `bg-red-950/20`) to a
+       light tint instead, so error/warning boxes look soft on white
+       rather than muddy. */
+    --fuchsia-300: 162 28 175;   /* fuchsia-700 */
+    --fuchsia-400: 162 28 175;   /* fuchsia-700 */
+    --fuchsia-700: 162 28 175;   /* canonical */
+    --emerald-300: 4 120 87;     /* emerald-700 */
+    --emerald-400: 4 120 87;     /* emerald-700 */
+    --emerald-700: 4 120 87;     /* canonical */
+    --amber-300:   180 83 9;     /* amber-700 — deep-ish for contrast on
+                                    amber-tinted bg */
+    --amber-400:   180 83 9;     /* amber-700 */
+    --amber-700:   180 83 9;     /* canonical */
+    --amber-950:   254 243 199;  /* amber-100 (was a dark surface) */
+    --red-300:     185 28 28;    /* red-700 */
+    --red-400:     185 28 28;    /* red-700 */
+    --red-700:     185 28 28;    /* canonical */
+    --red-950:     254 226 226;  /* red-100 (was a dark surface) */
+    --blue-300:    29 78 216;    /* blue-700 */
+    --blue-400:    29 78 216;    /* blue-700 */
+    --blue-700:    29 78 216;    /* canonical */
+    --cyan-300:    14 116 144;   /* cyan-700 */
+    --cyan-400:    14 116 144;   /* cyan-700 */
+    --cyan-700:    14 116 144;   /* canonical */
+    --purple-300:  126 34 206;   /* purple-700 */
+    --purple-400:  126 34 206;   /* purple-700 */
+    --purple-700:  126 34 206;   /* canonical */
+    --orange-300:  194 65 12;    /* orange-700 */
+    --orange-400:  194 65 12;    /* orange-700 */
+    --orange-700:  194 65 12;    /* canonical */
+    --teal-300:    15 118 110;   /* teal-700 */
+    --teal-400:    15 118 110;   /* teal-700 */
+    --teal-700:    15 118 110;   /* canonical */
+    --green-300:   21 128 61;    /* green-700 */
+    --green-400:   21 128 61;    /* green-700 */
+    --green-700:   21 128 61;    /* canonical */
   }
 
   :root.dark {
@@ -76,6 +117,40 @@
     --slate-800: 30 41 59;
     --slate-900: 15 23 42;
     --slate-950: 2 6 23;
+
+    /* Accent shades at canonical (Tailwind default) values for dark mode. */
+    --fuchsia-300: 240 171 252;
+    --fuchsia-400: 232 121 249;
+    --fuchsia-700: 162 28 175;
+    --emerald-300: 110 231 183;
+    --emerald-400: 52 211 153;
+    --emerald-700: 4 120 87;
+    --amber-300:   252 211 77;
+    --amber-400:   251 191 36;
+    --amber-700:   180 83 9;
+    --amber-950:   69 26 3;
+    --red-300:     252 165 165;
+    --red-400:     248 113 113;
+    --red-700:     185 28 28;
+    --red-950:     69 10 10;
+    --blue-300:    147 197 253;
+    --blue-400:    96 165 250;
+    --blue-700:    29 78 216;
+    --cyan-300:    103 232 249;
+    --cyan-400:    34 211 238;
+    --cyan-700:    14 116 144;
+    --purple-300:  216 180 254;
+    --purple-400:  192 132 252;
+    --purple-700:  126 34 206;
+    --orange-300:  253 186 116;
+    --orange-400:  251 146 60;
+    --orange-700:  194 65 12;
+    --teal-300:    94 234 212;
+    --teal-400:    45 212 191;
+    --teal-700:    15 118 110;
+    --green-300:   134 239 172;
+    --green-400:   74 222 128;
+    --green-700:   21 128 61;
   }
 
   html, body {

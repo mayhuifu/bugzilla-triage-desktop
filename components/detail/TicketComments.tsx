@@ -42,7 +42,7 @@ export function TicketComments({ comments }: { comments: TicketComment[] }) {
           return (
             <div
               key={c.id}
-              className={`rounded-lg border p-3 ${isAiAuthored ? "bg-fuchsia-500/5 border-fuchsia-500/20" : "bg-bg-panel/40 border-bg-border/40"}`}
+              className={`rounded-lg border p-3 ${isAiAuthored ? "bg-fuchsia-500/10 border-fuchsia-500/30" : "bg-bg-panel/40 border-bg-border/40"}`}
             >
               <div className="flex items-center justify-between mb-2 text-[11px]">
                 <div className="flex items-center gap-2">

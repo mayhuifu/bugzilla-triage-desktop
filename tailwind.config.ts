@@ -87,6 +87,70 @@ const config: Config = {
           900: cssVar("slate-900"),
           950: cssVar("slate-950"),
         },
+
+        // Accent palette overrides (added in v0.1.5 light-mode polish).
+        // We only override the SHADES actually used in the codebase as
+        // colored text on a faintly-tinted accent background — those
+        // shades are tuned for dark mode and look invisible on light.
+        // The CSS variables in :root flip them to deeper shades that
+        // read on white; :root.dark keeps the canonical values.
+        // The -950 shades exist because a handful of places use
+        // `bg-red-950/20` etc. — explicit "dark surface" backgrounds
+        // that need a light-mode equivalent. The override turns them
+        // into `red-50` and friends so light mode gets a soft tint
+        // instead of muddy dark on white.
+        fuchsia: {
+          300: cssVar("fuchsia-300"),
+          400: cssVar("fuchsia-400"),
+          700: cssVar("fuchsia-700"),
+        },
+        emerald: {
+          300: cssVar("emerald-300"),
+          400: cssVar("emerald-400"),
+          700: cssVar("emerald-700"),
+        },
+        amber: {
+          300: cssVar("amber-300"),
+          400: cssVar("amber-400"),
+          700: cssVar("amber-700"),
+          950: cssVar("amber-950"),
+        },
+        red: {
+          300: cssVar("red-300"),
+          400: cssVar("red-400"),
+          700: cssVar("red-700"),
+          950: cssVar("red-950"),
+        },
+        blue: {
+          300: cssVar("blue-300"),
+          400: cssVar("blue-400"),
+          700: cssVar("blue-700"),
+        },
+        cyan: {
+          300: cssVar("cyan-300"),
+          400: cssVar("cyan-400"),
+          700: cssVar("cyan-700"),
+        },
+        purple: {
+          300: cssVar("purple-300"),
+          400: cssVar("purple-400"),
+          700: cssVar("purple-700"),
+        },
+        orange: {
+          300: cssVar("orange-300"),
+          400: cssVar("orange-400"),
+          700: cssVar("orange-700"),
+        },
+        teal: {
+          300: cssVar("teal-300"),
+          400: cssVar("teal-400"),
+          700: cssVar("teal-700"),
+        },
+        green: {
+          300: cssVar("green-300"),
+          400: cssVar("green-400"),
+          700: cssVar("green-700"),
+        },
       },
       fontFamily: {
         sans: [
