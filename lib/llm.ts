@@ -179,19 +179,38 @@ function buildUserPrompt(
   parts.push(ticket.description || "(empty)");
   parts.push("");
 
-  // 3GPP RAG context — top-K BM25 hits over the local Rel-17 corpus,
-  // injected as CANDIDATE references the model can choose to cite. We
-  // explicitly tell the model these are candidates so it doesn't blindly
-  // adopt every clause — BM25 on noisy ticket text occasionally pulls
-  // tangentially-relevant clauses, and the model is better at deciding
-  // semantic relevance than the keyword index is. When the corpus isn't
-  // installed `retrievedClauses` is empty/undefined and this section is
-  // skipped entirely.
+  // 3GPP RAG context — top-K BM25 hits over the local Rel-17 corpus.
+  // EARLIER VERSION (v0.1.6/v0.1.7) framed these as "CANDIDATE references —
+  // cite ONLY when genuinely relevant" and "do not feel obliged to cite every
+  // candidate". On DeepSeek that phrasing was too restrictive: when BM25
+  // returned tangentially-related clauses (common when the ticket text uses
+  // vendor-specific commands like AT#CRFTXSTART that don't exist in 3GPP),
+  // the model interpreted the rule as "cite only from this list", saw nothing
+  // applicable, and emitted an empty specReferences[] — losing the training-
+  // data citations it would have produced without RAG. This new framing
+  // makes the retrieved clauses ADDITIVE: useful when they fit, ignored when
+  // they don't, with explicit permission (and reminder per CRITICAL RULE #2)
+  // to cite training-data clauses anyway.
   if (retrievedClauses && retrievedClauses.length > 0) {
-    parts.push("## Reference spec excerpts (retrieved from local 3GPP Rel-17 corpus)");
-    parts.push("These are CANDIDATE references — cite them in specReferences ONLY when");
-    parts.push("genuinely relevant to your analysis. Do not fabricate clause numbers and");
-    parts.push("do not feel obliged to cite every candidate.");
+    parts.push("## Possibly-relevant 3GPP clauses (auto-retrieved from local Rel-17 corpus)");
+    parts.push("");
+    parts.push("These were surfaced by a keyword search over the ticket text. Treat them");
+    parts.push("as ADDITIONAL evidence you can draw on alongside your training-data");
+    parts.push("knowledge of 3GPP — NOT as a constrained list.");
+    parts.push("");
+    parts.push("How to use them:");
+    parts.push("  - When a retrieved clause genuinely supports an inference, cite it in");
+    parts.push("    specReferences using its full canonical form (e.g. \"3GPP TS 38.211 §6.1.4\").");
+    parts.push("  - When the retrieved set doesn't fit the ticket, FEEL FREE to cite OTHER");
+    parts.push("    clauses you know from training (e.g. for a frequency-error ticket the");
+    parts.push("    UE transmit accuracy requirement in TS 38.101-1 §6.5.1, even though");
+    parts.push("    that clause isn't listed below).");
+    parts.push("  - Empty specReferences is acceptable only when the ticket is genuinely");
+    parts.push("    non-3GPP (a build tooling issue, internal-vendor-API bug, etc.).");
+    parts.push("    Per CRITICAL RULE #2, modem/RF tickets should cite at least one clause.");
+    parts.push("  - Do NOT fabricate clause numbers. If unsure, omit rather than invent.");
+    parts.push("");
+    parts.push("Retrieved clauses:");
     parts.push("");
     for (const c of retrievedClauses) {
       parts.push(`### ${c.citation} — ${c.title}`);
@@ -267,6 +286,13 @@ export interface TriageOptions {
    *  triage API route at app/api/tickets/[id]/triage/route.ts calls
    *  retrieveContext() on the ticket and passes the result through. */
   retrievedClauses?: RetrievedClause[];
+  /** Whether to look up the model's emitted specReferences against the
+   *  corpus after the LLM returns. v0.1.7: defaults to `true` for
+   *  backwards compatibility, but the triage route sets this to `false`
+   *  when the user has flipped off the "Use 3GPP corpus" toggle so
+   *  non-cellular tickets don't get incorrect corpus matches grafted
+   *  onto whatever the model invented. */
+  enrichWithCorpus?: boolean;
 }
 
 export async function runTriage(
@@ -285,7 +311,10 @@ export async function runTriage(
   const baseURL = s.llmBaseUrl?.trim() || undefined;
   const userPrompt = buildUserPrompt(ticket, opts.followup, opts.retrievedClauses);
 
-  const common = { apiKey, baseURL, model, userPrompt, ticketId: ticket.id };
+  // Default to enriching unless the caller explicitly disabled it. The
+  // triage routes pass `false` when the per-triage RAG toggle is off.
+  const enrichWithCorpus = opts.enrichWithCorpus !== false;
+  const common = { apiKey, baseURL, model, userPrompt, ticketId: ticket.id, enrichWithCorpus };
   if (s.llmProvider === "openai-compatible") {
     return runTriageOpenAI(common);
   }
@@ -300,10 +329,11 @@ interface ProviderCallArgs {
   model: string;
   userPrompt: string;
   ticketId: number;
+  enrichWithCorpus: boolean;
 }
 
 async function runTriageAnthropic(args: ProviderCallArgs): Promise<TriageResult> {
-  const { apiKey, baseURL, model, userPrompt, ticketId } = args;
+  const { apiKey, baseURL, model, userPrompt, ticketId, enrichWithCorpus } = args;
   const client = new Anthropic({ apiKey, baseURL });
 
   // output_config.format with json_schema makes Anthropic validate the
@@ -342,10 +372,12 @@ async function runTriageAnthropic(args: ProviderCallArgs): Promise<TriageResult>
     model: response.model || model,
   } as TriageResult;
   // Enrich excerpts with corpus lookups BEFORE the CLASSIFICATION
-  // header is rendered — the header prefers realText (corpus) over
-  // summary (model paraphrase) when both are present. When the corpus
-  // isn't installed, enrichExcerptsWithCorpus is a no-op.
-  return withClassificationPrepended(enrichExcerptsWithCorpus(result));
+  // header is rendered (so realText wins over summary in the header).
+  // Skipped when the caller disabled RAG — non-cellular tickets
+  // shouldn't have corpus citations grafted onto whatever the model
+  // emitted.
+  const enriched = enrichWithCorpus ? enrichExcerptsWithCorpus(result) : result;
+  return withClassificationPrepended(enriched);
 }
 
 // ── OpenAI-compatible path ────────────────────────────────────────
@@ -371,7 +403,7 @@ ${JSON.stringify(TRIAGE_SCHEMA, null, 2)}
 `.trim();
 
 async function runTriageOpenAI(args: ProviderCallArgs): Promise<TriageResult> {
-  const { apiKey, baseURL, model, userPrompt, ticketId } = args;
+  const { apiKey, baseURL, model, userPrompt, ticketId, enrichWithCorpus } = args;
   // The openai SDK requires *some* baseURL even when pointing at api.openai.com.
   // We let it use its own default when the user left baseURL blank — that's
   // an unusual configuration (the user picked "OpenAI-compatible" but with
@@ -418,8 +450,10 @@ async function runTriageOpenAI(args: ProviderCallArgs): Promise<TriageResult> {
   // it provided one.
   const filled = fillTriageDefaults(parsed, ticketId, response.model || model);
   // Enrich BEFORE prepending CLASSIFICATION — header rendering prefers
-  // realText (corpus) over summary (model paraphrase).
-  return withClassificationPrepended(enrichExcerptsWithCorpus(filled));
+  // realText (corpus) over summary (model paraphrase). Skipped when
+  // the user has flipped off the per-triage RAG toggle.
+  const enriched = enrichWithCorpus ? enrichExcerptsWithCorpus(filled) : filled;
+  return withClassificationPrepended(enriched);
 }
 
 /** Strip a leading ```json … ``` fence if the model included one despite

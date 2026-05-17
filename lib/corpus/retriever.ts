@@ -37,7 +37,12 @@ export interface RetrievedClause {
   bm25Score?: number;        // negative number; lower (more negative) = better
 }
 
-const TOP_K = 6;
+// TOP_K tuned for precision-over-recall. Reduced from 6 in v0.1.7 after
+// user feedback that some retrieved candidates were tangentially related
+// — fewer hits reaching the model = fewer false-positive citations. If
+// the model needs broader context for a hard ticket the user can toggle
+// RAG off entirely and let the model reason from training data alone.
+const TOP_K = 4;
 const MAX_TEXT_CHARS = 1200; // per-clause cap when injecting into prompt
 
 // Common English stopwords that confuse BM25 ranking when bag-of-words.

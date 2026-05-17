@@ -20,6 +20,10 @@ export async function POST(
   const url = new URL(req.url);
   const explicitMock = url.searchParams.get("mock") === "1";
   const model = url.searchParams.get("model") || undefined;
+  // ?rag=0 disables corpus retrieval for this refinement — same flag
+  // shape as the initial /triage route. Default is true.
+  const ragParam = url.searchParams.get("rag");
+  const useRag = ragParam == null ? true : ragParam !== "0" && ragParam !== "false";
 
   let ticket;
   try {
@@ -32,14 +36,16 @@ export async function POST(
 
   // Re-run retrieval on the (unchanged) ticket text so the refined
   // triage gets the same candidate clauses. The followup instruction
-  // alone isn't a strong enough signal to re-rank — the user is
-  // tweaking interpretation, not changing the underlying issue.
+  // alone isn't a strong enough signal to re-rank. Skipped when the
+  // per-triage RAG toggle is off.
   let retrievedClauses: ReturnType<typeof retrieveContext> = [];
-  try {
-    retrievedClauses = retrieveContext(ticket);
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn(`[triage/followup] corpus retrieval failed (continuing without RAG):`, err);
+  if (useRag) {
+    try {
+      retrievedClauses = retrieveContext(ticket);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[triage/followup] corpus retrieval failed (continuing without RAG):`, err);
+    }
   }
 
   try {
@@ -48,8 +54,18 @@ export async function POST(
       model,
       timeoutMs: 270_000,
       retrievedClauses,
+      enrichWithCorpus: useRag,
     });
-    return NextResponse.json({ triage });
+    return NextResponse.json({
+      triage,
+      ragEnabled: useRag,
+      retrievedClauseCount: retrievedClauses.length,
+      retrievedClauses: retrievedClauses.map(c => ({
+        citation: c.citation,
+        title: c.title,
+        parentTitle: c.parentTitle ?? null,
+      })),
+    });
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 502 });
   }

@@ -18,6 +18,14 @@ export async function POST(
   const explicitMock = url.searchParams.get("mock") === "1";
   // No default: when omitted, triage_llm.py lets the claude CLI pick.
   const model = url.searchParams.get("model") || undefined;
+  // ?rag=1|0|<absent> — per-triage opt-in for the 3GPP corpus.
+  // Absent → defaults to true (preserves v0.1.6/v0.1.7 behavior).
+  // 0 / false → disables both pre-triage retrieval and post-triage
+  // enrichment. The TriageChatPanel sets this from a localStorage-
+  // backed user preference so non-cellular tickets don't get clobbered
+  // by tangential corpus matches.
+  const ragParam = url.searchParams.get("rag");
+  const useRag = ragParam == null ? true : ragParam !== "0" && ragParam !== "false";
 
   // Step 1: fetch ticket detail (live or mock)
   let ticket;
@@ -38,27 +46,44 @@ export async function POST(
     }
   }
 
-  // Step 2: retrieve candidate 3GPP clauses (v0.1.6 RAG). Wrapped in
-  // try/catch and graceful no-op so a missing/broken corpus never
-  // breaks triage — the model just falls back to its training-data
-  // paraphrase like in v0.1.5.
+  // Step 2: retrieve candidate 3GPP clauses (v0.1.6 RAG, opt-in v0.1.7).
+  // Skipped entirely when the user disabled RAG for this triage —
+  // non-cellular tickets benefit from a clean prompt rather than
+  // tangentially-related corpus matches.
   let retrievedClauses: ReturnType<typeof retrieveContext> = [];
-  try {
-    retrievedClauses = retrieveContext(ticket);
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn(`[triage] corpus retrieval failed (continuing without RAG):`, err);
+  if (useRag) {
+    try {
+      retrievedClauses = retrieveContext(ticket);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[triage] corpus retrieval failed (continuing without RAG):`, err);
+    }
   }
 
-  // Step 3: invoke the LLM with retrieved-clause context. Post-triage
-  // enrichment (looking up the model's specReferences against the corpus
-  // to populate realText) is handled inside runTriage().
+  // Step 3: invoke the LLM. Both prompt injection and post-triage
+  // enrichment are gated on `useRag`.
   try {
-    const { triage } = await bridgeTriage(ticket, { model, timeoutMs: 270_000, retrievedClauses });
+    const { triage } = await bridgeTriage(ticket, {
+      model,
+      timeoutMs: 270_000,
+      retrievedClauses,
+      enrichWithCorpus: useRag,
+    });
     return NextResponse.json({
       triage,
       source,
       retrievedClauseCount: retrievedClauses.length,
+      ragEnabled: useRag,
+      // Compact summary of what BM25 surfaced — citation + title only,
+      // no full text. The UI renders this in a retrieval-info chat turn
+      // so the user can see what the model considered before citing
+      // (or NOT citing). Empty array when RAG was disabled or the
+      // corpus turned up nothing.
+      retrievedClauses: retrievedClauses.map(c => ({
+        citation: c.citation,
+        title: c.title,
+        parentTitle: c.parentTitle ?? null,
+      })),
     });
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 502 });

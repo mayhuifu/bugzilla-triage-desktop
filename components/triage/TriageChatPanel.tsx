@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Sparkles, Send, Loader2, ShieldCheck, Lock, AlertTriangle, RefreshCw,
   ListChecks, Lightbulb, MessageCircleQuestion, AlertOctagon, FileText,
@@ -27,9 +27,19 @@ interface ChatTurn {
   kind: "ticket-loaded" | "ai-thinking" | "ai-classification" | "ai-rootcauses"
        | "ai-missing-info" | "ai-next-steps" | "ai-escalation" | "ai-internal-summary"
        | "ai-customer-summary" | "ai-comment-draft" | "user-followup" | "ai-error"
-       | "approval-card" | "manual-card" | "success-receipt" | "system";
+       | "approval-card" | "manual-card" | "success-receipt" | "system"
+       | "retrieval-info";
   data?: Record<string, unknown>;
   time: string;
+}
+
+/** Compact retrieval-info turn payload — what BM25 surfaced for this triage,
+ *  shown after the ai-classification bubble so the user sees what the model
+ *  considered before deciding which clauses (if any) to cite. */
+interface RetrievedClauseSummary {
+  citation: string;
+  title: string;
+  parentTitle: string | null;
 }
 
 /** Seed for the manual-triage flow. The submit endpoint only reads
@@ -77,6 +87,34 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
   // SpecDrawer state: when set, the right-side drawer is open and
   // showing the clause whose citation matches this string. Null = closed.
   const [openClause, setOpenClause] = useState<string | null>(null);
+
+  // Per-triage 3GPP RAG toggle (v0.1.7). Defaults OFF — most tickets
+  // are NOT cellular-protocol bugs, and BM25 over arbitrary ticket text
+  // surfaces tangential clauses that pollute the model's prompt. Users
+  // explicitly opt in per triage; the choice is persisted to
+  // localStorage so the next session remembers their preference.
+  const RAG_PREF_KEY = "bugzilla-triage-use-rag";
+  const [useRag, setUseRag] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    // Only "true" enables it — everything else (null, "false", garbage)
+    // leaves RAG off.
+    return window.localStorage.getItem(RAG_PREF_KEY) === "true";
+  });
+  // The corpus card in Settings drives the visibility of the toggle;
+  // null = unknown / still polling. Hide the toggle entirely when the
+  // corpus isn't installed so it doesn't suggest a non-functional
+  // affordance.
+  const [corpusInstalled, setCorpusInstalled] = useState<boolean | null>(null);
+  useEffect(() => {
+    fetch("/api/corpus/status").then(r => r.json()).then(d => {
+      setCorpusInstalled(Boolean(d?.installed));
+    }).catch(() => setCorpusInstalled(false));
+  }, []);
+
+  const persistUseRag = useCallback((v: boolean) => {
+    setUseRag(v);
+    try { window.localStorage.setItem(RAG_PREF_KEY, String(v)); } catch { /* private mode */ }
+  }, []);
 
   const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -135,12 +173,21 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
     addTurn({ kind: "ai-thinking", data: { stage: "classifying" } });
 
     try {
-      const res = await fetch(`/api/tickets/${ticketId}/triage`, { method: "POST" });
+      // ?rag=0 disables corpus retrieval+enrichment when the user has
+      // flipped off the toggle for this triage. Sending the param is
+      // cheap and explicit — the server defaults to enabled when absent.
+      const ragQuery = useRag ? "" : "?rag=0";
+      const res = await fetch(`/api/tickets/${ticketId}/triage${ragQuery}`, { method: "POST" });
       const data = await res.json();
       // Remove the "thinking" turn
       setTurns(prev => prev.filter(t => t.kind !== "ai-thinking"));
       if (data.triage) {
-        applyTriageToChat(data.triage, /* refined */ false);
+        applyTriageToChat(data.triage, /* refined */ false, {
+          ragEnabled: Boolean(data.ragEnabled),
+          retrievedClauses: Array.isArray(data.retrievedClauses)
+            ? (data.retrievedClauses as RetrievedClauseSummary[])
+            : [],
+        });
         pushToast("info", "Triage drafted", "Review and edit before submitting.");
       } else {
         addTurn({ kind: "ai-error", data: { msg: data.error || "Unknown error" } });
@@ -168,7 +215,11 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
     addTurn({ kind: "manual-card" });
   }
 
-  function applyTriageToChat(t: TriageResult, refined: boolean) {
+  function applyTriageToChat(
+    t: TriageResult,
+    refined: boolean,
+    retrieval?: { ragEnabled: boolean; retrievedClauses: RetrievedClauseSummary[] },
+  ) {
     setTriage(t);
     // Trim chat turns that came from a previous triage run, keep ticket-loaded + user-followups
     setTurns(prev => prev.filter(turn =>
@@ -180,6 +231,22 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
       addTurn({ kind: "system", data: { text: "Refined draft" } });
     }
     addTurn({ kind: "ai-classification", data: { triage: t } });
+    // Surface what BM25 retrieved (when RAG was enabled). Shown
+    // regardless of whether the model cited from the candidates — gives
+    // the user transparency into the retrieval step, especially useful
+    // when the model decides the candidates aren't relevant and falls
+    // back to training-data citations.
+    if (retrieval?.ragEnabled && retrieval.retrievedClauses.length > 0) {
+      const cited = new Set((t.specReferences ?? []).map(c => c.trim()));
+      addTurn({
+        kind: "retrieval-info",
+        data: {
+          retrievedClauses: retrieval.retrievedClauses,
+          citedFromRetrieved: retrieval.retrievedClauses.filter(c => cited.has(c.citation.trim())).length,
+          citedTotal: t.specReferences?.length ?? 0,
+        },
+      });
+    }
     addTurn({ kind: "ai-rootcauses", data: { triage: t } });
     if (t.missingInformation.length) addTurn({ kind: "ai-missing-info", data: { triage: t } });
     addTurn({ kind: "ai-next-steps", data: { triage: t } });
@@ -199,7 +266,8 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
     addTurn({ kind: "ai-thinking", data: { stage: "refining" } });
 
     try {
-      const res = await fetch(`/api/tickets/${ticketId}/triage/followup`, {
+      const ragQuery = useRag ? "" : "?rag=0";
+      const res = await fetch(`/api/tickets/${ticketId}/triage/followup${ragQuery}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ instruction: userText }),
@@ -207,7 +275,12 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
       const data = await res.json();
       setTurns(prev => prev.filter(t => t.kind !== "ai-thinking"));
       if (data.triage) {
-        applyTriageToChat(data.triage, true);
+        applyTriageToChat(data.triage, true, {
+          ragEnabled: Boolean(data.ragEnabled),
+          retrievedClauses: Array.isArray(data.retrievedClauses)
+            ? (data.retrievedClauses as RetrievedClauseSummary[])
+            : [],
+        });
         setApproved(false);
       } else {
         addTurn({ kind: "ai-error", data: { msg: data.error || "Unknown" } });
@@ -421,6 +494,60 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
             )}
           </ChatBubble>
         );
+
+      case "retrieval-info": {
+        // Transparency turn: shows what the local 3GPP corpus surfaced
+        // for this ticket via BM25. Helps the user understand WHY the
+        // model cited (or didn't cite) specific clauses — especially
+        // when the model decided the retrieved set wasn't relevant and
+        // fell back to training-data citations.
+        const candidates = (turn.data?.retrievedClauses as RetrievedClauseSummary[]) || [];
+        const citedFromRetrieved = (turn.data?.citedFromRetrieved as number) ?? 0;
+        const citedTotal = (turn.data?.citedTotal as number) ?? 0;
+        const citedSet = new Set((triage?.specReferences ?? []).map(c => c.trim()));
+        return (
+          <ChatBubble
+            key={turn.id} role="system" time={turn.time}
+            title={`Corpus retrieval · ${candidates.length} candidate clause${candidates.length === 1 ? "" : "s"}`}
+            subtitle={
+              citedTotal === 0
+                ? "Model didn't cite any 3GPP clauses for this ticket."
+                : citedFromRetrieved === 0
+                  ? `Model cited ${citedTotal} clause${citedTotal === 1 ? "" : "s"} — all from its own training-data knowledge (none of the retrieved candidates fit).`
+                  : `Model cited ${citedTotal} clause${citedTotal === 1 ? "" : "s"} · ${citedFromRetrieved} from the candidates below.`
+            }
+          >
+            <ul className="space-y-1 mt-1">
+              {candidates.map((c, i) => {
+                const wasCited = citedSet.has(c.citation.trim());
+                return (
+                  <li
+                    key={`${turn.id}-cand-${i}`}
+                    className={`text-[11px] flex items-start gap-2 rounded-md px-2 py-1 ${
+                      wasCited
+                        ? "bg-emerald-500/10 ring-1 ring-emerald-500/30"
+                        : "bg-bg-panel/40 ring-1 ring-bg-border/40"
+                    }`}
+                  >
+                    <span className={`mt-0.5 text-[10px] font-mono font-bold uppercase tracking-wider shrink-0 ${
+                      wasCited ? "text-emerald-300" : "text-slate-500"
+                    }`}>
+                      {wasCited ? "cited" : "skip"}
+                    </span>
+                    <span className="flex-1 min-w-0">
+                      <span className="font-mono text-slate-300">{c.citation}</span>
+                      {c.title && <span className="text-slate-500"> — {c.title}</span>}
+                      {c.parentTitle && (
+                        <span className="block text-[10px] text-slate-500 mt-0.5">within: {c.parentTitle}</span>
+                      )}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </ChatBubble>
+        );
+      }
 
       case "ai-rootcauses":
         return t && (
@@ -803,6 +930,27 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
               <span className="text-fuchsia-300">AI</span> drafts the structured analysis ·{" "}
               <span className="text-slate-300">Manual</span> lets you type the comment yourself
             </div>
+            {/* 3GPP RAG opt-in. Only shown when the corpus is installed.
+                Defaults OFF; the user explicitly enables it for cellular
+                tickets where the model would benefit from real spec
+                citations. Choice persists via localStorage. */}
+            {corpusInstalled && (
+              <label
+                className="mt-1 flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer select-none px-2.5 py-1 rounded-md bg-bg-panel/40 border border-bg-border/40 hover:bg-bg-panel/60"
+                title="When on, the AI receives candidate clauses from the local 3GPP Rel-17 corpus AND its specReferences are looked up in the corpus after triage. Leave off for non-cellular tickets."
+              >
+                <input
+                  type="checkbox"
+                  checked={useRag}
+                  onChange={e => persistUseRag(e.target.checked)}
+                  className="w-3.5 h-3.5 accent-accent"
+                />
+                <BookText className={`w-3.5 h-3.5 ${useRag ? "text-accent" : "text-slate-500"}`} />
+                <span>
+                  Use <span className="text-slate-200">3GPP Spec RAG</span>
+                </span>
+              </label>
+            )}
           </div>
         )}
 

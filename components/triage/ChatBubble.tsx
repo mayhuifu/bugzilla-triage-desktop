@@ -49,7 +49,7 @@ export function ChatBubble({ role, time, title, subtitle, children, highlight }:
       <div className={`flex-1 min-w-0 max-w-[92%] ${role === "user" ? "items-end" : ""}`}>
         <div className={`text-[10px] mb-0.5 ${role === "user" ? "text-right" : ""}`}>
           <span className={`${cfg.iconClass} font-medium uppercase tracking-wider`}>
-            {role === "ai" ? "Claude · AI Triage" :
+            {role === "ai" ? "AI Triage" :
              role === "user" ? "You" :
              role === "success" ? "Posted to Bugzilla" :
              role === "error" ? "Error" : ""}

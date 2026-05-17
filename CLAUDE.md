@@ -69,6 +69,10 @@ The `corpusManifestUrl` setting is the China-friendliness lever: GitHub is block
 
 The native binding (`better-sqlite3`'s `.node` file) is shipped via electron-builder's `asarUnpack` + explicit `extraResources` entries — don't refactor `electron-builder.json` without preserving those.
 
+### Release notes
+
+`RELEASES.md` in the repo root is the canonical changelog — entries land **there first**, before the tag is cut, then get pasted into the GitHub Release body when CI finishes. The template at the bottom of that file documents the format (sections: Highlights, Changes, Upgrade notes) and the publishing steps. Whoever cuts the tag should also update `RELEASES.md` in the same commit as the `package.json` version bump.
+
 ## Conventions
 
 - `@/*` alias maps to repo root (see `tsconfig.json`).

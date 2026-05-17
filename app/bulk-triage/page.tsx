@@ -210,7 +210,7 @@ function BulkTriageInner() {
           <div>
             <h1 className="text-xl font-semibold text-slate-100">Bulk AI Triage</h1>
             <p className="text-sm text-slate-500 mt-0.5">
-              Up to {BULK_CONCURRENCY} tickets run in parallel via your Claude Code subscription.
+              Up to {BULK_CONCURRENCY} tickets run in parallel via your configured LLM provider.
               Click any completed row to review and submit it individually.
             </p>
           </div>
