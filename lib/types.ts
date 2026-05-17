@@ -92,6 +92,12 @@ export interface TriageResult {
   confidence: "high" | "medium" | "low";
   domain: string;                       // e.g. "NR RF · AT-command surface · band n40"
   specReferences: string[];             // 3GPP clauses applicable
+  /** Optional reference summaries for each entry in `specReferences`.
+   *  Added in v0.1.5 so the Bugzilla comment's CLASSIFICATION header can
+   *  give a debugger a short paraphrase of what each cited clause says
+   *  (drawn from the model's training data). One entry per clause when
+   *  the model knows it; missing entries fall back to clause-only. */
+  specExcerpts: SpecExcerpt[];
   issueSummary: string;
   rootCauses: Array<{
     rank: number;
@@ -108,7 +114,22 @@ export interface TriageResult {
   escalationRecommendation: string;
   internalSummary: string;       // engineer-facing
   customerSummary: string;       // customer-safe (sanitized)
-  bugzillaComment: string;       // full final comment that will be posted
+  /** The full Bugzilla comment body. As of v0.1.5 this is pre-merged
+   *  server-side to start with a CLASSIFICATION section built from
+   *  `confidence` / `domain` / `specReferences` / `specExcerpts`, followed
+   *  by the model's 4-layer body (OBSERVED / INFERRED / HYPOTHESIS /
+   *  NEXT STEPS). Editable in the UI before submission. */
+  bugzillaComment: string;
+}
+
+export interface SpecExcerpt {
+  /** The clause being summarized, matching one of the strings in
+   *  `TriageResult.specReferences`, e.g. "3GPP TS 38.211 §6.1.4". */
+  clause: string;
+  /** Brief 1–3 sentence paraphrase of what this clause specifies, drawn
+   *  from the model's knowledge. Editable in the UI; the user can refine
+   *  before submission. */
+  summary: string;
 }
 
 export interface TriageSubmission {

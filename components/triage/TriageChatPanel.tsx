@@ -42,6 +42,7 @@ function emptyManualTriage(ticketId: number): TriageResult {
     confidence: "medium",
     domain: "",
     specReferences: [],
+    specExcerpts: [],
     issueSummary: "",
     rootCauses: [],
     missingInformation: [],
@@ -290,7 +291,8 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
         return t && (
           <ChatBubble
             key={turn.id} role="ai" time={turn.time} highlight={false}
-            title="Initial classification" subtitle="Editable — click any field"
+            title="Initial classification"
+            subtitle="Editable — included verbatim in the Bugzilla comment's CLASSIFICATION header"
           >
             <div className="flex items-center gap-2 mb-2 flex-wrap">
               <ConfidenceBadge confidence={t.confidence} />
@@ -299,9 +301,53 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
               </span>
             </div>
             <EditableTextarea value={t.issueSummary} onChange={v => updateTriage({ issueSummary: v })} rows={2} />
+
+            {/* Spec references with optional per-clause excerpts. The
+                excerpts come from the model's own knowledge of the cited
+                clauses (see specExcerpts in TRIAGE_SCHEMA). The user can
+                edit a summary to refine it before submission; clauses
+                without an excerpt show a hint instead of an empty box. */}
             {t.specReferences.length > 0 && (
-              <div className="mt-2 text-[11px] text-slate-500">
-                <span className="text-slate-400 font-medium">Specs:</span> {t.specReferences.join("; ")}
+              <div className="mt-3 space-y-1.5">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 font-medium">
+                  Spec references ({t.specReferences.length})
+                </div>
+                {t.specReferences.map((ref, i) => {
+                  const excerptIdx = t.specExcerpts.findIndex(e => e.clause === ref);
+                  const excerpt = excerptIdx >= 0 ? t.specExcerpts[excerptIdx] : undefined;
+                  return (
+                    <div key={`${t.generatedAt}-spec-${i}`} className="bg-bg-panel/40 rounded-lg p-2 border border-bg-border/40">
+                      <div className="text-[11px] font-mono text-slate-300 mb-1">{ref}</div>
+                      {excerpt ? (
+                        <EditableTextarea
+                          value={excerpt.summary}
+                          onChange={v => {
+                            const next = [...t.specExcerpts];
+                            next[excerptIdx] = { ...excerpt, summary: v };
+                            updateTriage({ specExcerpts: next });
+                          }}
+                          rows={2}
+                          className="text-[11px] text-slate-400 leading-snug"
+                        />
+                      ) : (
+                        <div className="text-[10px] text-slate-500 italic">
+                          No summary provided by the model — click below to add one
+                          <button
+                            type="button"
+                            onClick={() => {
+                              updateTriage({
+                                specExcerpts: [...t.specExcerpts, { clause: ref, summary: "" }],
+                              });
+                            }}
+                            className="ml-2 text-accent-glow hover:underline not-italic"
+                          >
+                            + add summary
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </ChatBubble>
@@ -435,12 +481,17 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
         return t && (
           <ChatBubble key={turn.id} role="ai" time={turn.time}
             title="Bugzilla comment draft"
-            subtitle={`Auto-prefixed with "Analyzed by AI Triage Bot:" on submission. ${t.bugzillaComment.length} chars.`}
+            subtitle={
+              `Already includes the CLASSIFICATION header (built from the section above) ` +
+              `followed by OBSERVED / INFERRED / HYPOTHESIS / NEXT STEPS. ` +
+              `Auto-prefixed with "Analyzed by AI Triage Bot:" on submission. ` +
+              `${t.bugzillaComment.length} chars.`
+            }
           >
             <EditableTextarea
               value={t.bugzillaComment}
               onChange={v => updateTriage({ bugzillaComment: v })}
-              rows={10}
+              rows={12}
               className="font-mono text-xs"
             />
           </ChatBubble>

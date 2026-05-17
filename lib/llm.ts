@@ -29,7 +29,7 @@ import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 
-import type { TicketDetail, TriageResult } from "./types";
+import type { TicketDetail, TriageResult, SpecExcerpt } from "./types";
 import { loadSettings } from "./settings";
 
 // Default to Opus 4.7 per Anthropic guidance — the most capable model for
@@ -49,7 +49,7 @@ const TRIAGE_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: [
-    "confidence", "domain", "specReferences", "issueSummary",
+    "confidence", "domain", "specReferences", "specExcerpts", "issueSummary",
     "rootCauses", "missingInformation", "nextSteps",
     "escalationRecommendation", "internalSummary",
     "customerSummary", "bugzillaComment",
@@ -63,7 +63,27 @@ const TRIAGE_SCHEMA = {
     specReferences: {
       type: "array",
       items: { type: "string" },
-      description: "Relevant 3GPP / vendor spec clauses",
+      description: "Relevant 3GPP / vendor spec clauses, e.g. '3GPP TS 38.211 §6.1.4'",
+    },
+    specExcerpts: {
+      type: "array",
+      description:
+        "ONE entry per spec clause in specReferences when known. Each entry has the " +
+        "clause string and a 1-3 sentence paraphrase of what that clause specifies, " +
+        "drawn from your training-data knowledge of the spec. These excerpts are " +
+        "rendered into the Bugzilla comment's CLASSIFICATION header so a debugger " +
+        "doesn't have to look up each reference cold. If you don't know a clause " +
+        "well enough to summarize, OMIT that entry rather than guess. Empty array " +
+        "is fine when no specs are cited.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["clause", "summary"],
+        properties: {
+          clause: { type: "string", description: "Matches one of the strings in specReferences" },
+          summary: { type: "string", description: "1-3 sentence paraphrase of what the clause specifies" },
+        },
+      },
     },
     issueSummary: { type: "string", description: "1-2 sentence summary of what is wrong" },
     rootCauses: {
@@ -103,9 +123,11 @@ const TRIAGE_SCHEMA = {
     bugzillaComment: {
       type: "string",
       description:
-        "Full 4-layer analysis text. The system will auto-prefix with 'Analyzed by AI Triage Bot:' on " +
-        "submission, so DO NOT include that prefix yourself. Structure: OBSERVED / INFERRED / " +
-        "HYPOTHESIS (ranked) / NEXT STEPS (with PASS/FAIL).",
+        "JUST the 4-layer analysis body. Structure: OBSERVED / INFERRED / HYPOTHESIS " +
+        "(ranked) / NEXT STEPS (with PASS/FAIL). DO NOT include 'Analyzed by AI Triage " +
+        "Bot:' prefix — added automatically on submit. DO NOT include a CLASSIFICATION " +
+        "section — the system prepends one automatically from confidence/domain/" +
+        "specReferences/specExcerpts. Start directly with 'OBSERVED:'.",
     },
   },
 } as const;
@@ -121,10 +143,11 @@ CRITICAL RULES:
 2. Every inference must cite a 3GPP spec clause, RF/BB physics, or a compliance helper.
 3. Hypotheses must be FALSIFIABLE — each one must come with a test that could disprove it.
 4. Next steps must name an owner (use email username before @) and a measurable PASS/FAIL criterion.
-5. The bugzillaComment field must follow the 4-layer structure: OBSERVED → INFERRED → HYPOTHESIS → NEXT STEPS.
+5. The bugzillaComment field must follow the 4-layer structure: OBSERVED → INFERRED → HYPOTHESIS → NEXT STEPS. Start the text with "OBSERVED:". DO NOT include a CLASSIFICATION header — the system prepends one automatically from the structured fields (confidence, domain, specReferences, specExcerpts).
 6. DO NOT include "Analyzed by AI Triage Bot:" prefix in bugzillaComment — that is added automatically.
 7. customerSummary must strip internal codenames (BBIC → baseband subsystem, RFIC → RF subsystem, etc.)
 8. For modem/RF tickets, identify the operating band (e.g. n40, B7, n78) and applicable 3GPP spec.
+9. For each 3GPP / vendor spec clause you cite in specReferences, ALSO add an entry to specExcerpts giving a 1–3 sentence paraphrase of what that clause specifies. Use your training-data knowledge of the spec. This gives the human debugger reference context without having to look up each cited clause. If a clause is too obscure for you to summarize confidently, omit it from specExcerpts (don't fabricate).
 
 CONFIDENCE GUIDELINE:
 - "high" — attachments exist, clear repro steps, domain unambiguous, root cause well-supported.
@@ -278,12 +301,17 @@ async function runTriageAnthropic(args: ProviderCallArgs): Promise<TriageResult>
     throw new Error(`Anthropic response was not valid JSON despite schema enforcement: ${msg}`);
   }
 
-  return {
+  const result = {
     ...parsed,
     ticketId,
     generatedAt: new Date().toISOString(),
     model: response.model || model,
   } as TriageResult;
+  // Server-side prepend so the final bugzillaComment opens with a
+  // structured CLASSIFICATION header built from the parsed fields,
+  // regardless of what the model itself wrote. See prependClassification()
+  // below for the rendering rules.
+  return withClassificationPrepended(result);
 }
 
 // ── OpenAI-compatible path ────────────────────────────────────────
@@ -354,7 +382,8 @@ async function runTriageOpenAI(args: ProviderCallArgs): Promise<TriageResult> {
   // validation, the model may omit fields. Filling defaults here keeps the
   // UI from crashing while still surfacing the model's actual output where
   // it provided one.
-  return fillTriageDefaults(parsed, ticketId, response.model || model);
+  const filled = fillTriageDefaults(parsed, ticketId, response.model || model);
+  return withClassificationPrepended(filled);
 }
 
 /** Strip a leading ```json … ``` fence if the model included one despite
@@ -392,5 +421,95 @@ function fillTriageDefaults(
     internalSummary: asStr(parsed.internalSummary),
     customerSummary: asStr(parsed.customerSummary),
     bugzillaComment: asStr(parsed.bugzillaComment),
+    specExcerpts: asArr<SpecExcerpt>(parsed.specExcerpts).filter(
+      // Drop malformed entries — providers that aren't strict-schema can
+      // emit nulls or partials. We keep only well-formed { clause, summary }
+      // objects so the UI doesn't have to defend against missing keys.
+      e => e && typeof e.clause === "string" && typeof e.summary === "string",
+    ),
   };
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Classification header
+//
+// Built server-side from the structured fields (confidence / domain /
+// specReferences / specExcerpts) and prepended to bugzillaComment so the
+// final Bugzilla comment opens with a reference-rich summary section:
+//
+//   CLASSIFICATION
+//   ==============
+//   Confidence:  HIGH
+//   Domain:      NR RF · AT-command surface · band n40 (TDD)
+//   Issue:       Frequency offset valid only on first TX activation.
+//
+//   Spec references:
+//     · 3GPP TS 38.211 §6.1.4
+//       Defines the NR uplink reference signal generation including
+//       frequency-offset application per resource grid slot.
+//     · 3GPP TS 36.521 §6.5.1
+//       LTE conformance test for transmitter frequency error.
+//
+//   ──────────────────────────────────────────────────────────────
+//
+//   OBSERVED:
+//   …
+//
+// Reason this lives server-side rather than at the prompt level: lets us
+// guarantee the format across providers (DeepSeek, Ollama, Together,
+// OpenAI, etc. all behave differently w.r.t. system-prompt adherence),
+// and lets us re-render cleanly if any of the parsed fields are edited
+// in the UI — though for now we just bake it once at AI-response time.
+// ──────────────────────────────────────────────────────────────────
+
+const CLASSIFICATION_SENTINEL = "CLASSIFICATION";
+
+function withClassificationPrepended(t: TriageResult): TriageResult {
+  // If the model defied the prompt and produced its own CLASSIFICATION
+  // header anyway, leave the body alone — avoids a duplicate header.
+  if (t.bugzillaComment.trim().startsWith(CLASSIFICATION_SENTINEL)) return t;
+
+  const header = renderClassificationHeader(t).trim();
+  if (!header) return t;
+
+  return {
+    ...t,
+    bugzillaComment: `${header}\n\n${t.bugzillaComment.trim()}`,
+  };
+}
+
+function renderClassificationHeader(t: TriageResult): string {
+  const lines: string[] = [];
+  lines.push(CLASSIFICATION_SENTINEL);
+  lines.push("==============");
+  lines.push(`Confidence:  ${t.confidence.toUpperCase()}`);
+  if (t.domain.trim()) lines.push(`Domain:      ${t.domain.trim()}`);
+  if (t.issueSummary.trim()) lines.push(`Issue:       ${t.issueSummary.trim()}`);
+
+  if (t.specReferences.length > 0) {
+    lines.push("");
+    lines.push("Spec references:");
+    // Match excerpt-by-clause; missing excerpts are fine, we just print
+    // the clause alone in that case.
+    const excerptByClause = new Map<string, string>();
+    for (const e of t.specExcerpts) {
+      if (e?.clause && e.summary) excerptByClause.set(e.clause.trim(), e.summary.trim());
+    }
+    for (const ref of t.specReferences) {
+      const clause = ref.trim();
+      if (!clause) continue;
+      lines.push(`  · ${clause}`);
+      const summary = excerptByClause.get(clause);
+      if (summary) {
+        // Indent the summary under the bullet for readability.
+        for (const ln of summary.split(/\r?\n/)) {
+          lines.push(`    ${ln}`);
+        }
+      }
+    }
+  }
+
+  lines.push("");
+  lines.push("──────────────────────────────────────────────────────────────");
+  return lines.join("\n");
 }
