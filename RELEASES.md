@@ -12,7 +12,36 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.26 — Pin Electron to ^38.0.0 (LTS) so better-sqlite3 actually loads
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **Electron downgraded from 42.x → 38.x (LTS)** because the better-sqlite3@12.10.0 native binary is the load-bearing dependency and Electron 42's V8 13 isn't compatible.
+- v0.1.25 tried to download better-sqlite3's electron-v42 prebuild via `npm_config_runtime=electron` env vars. That prebuild doesn't exist on npm — prebuild-install fell back to compiling from source against Electron 42's headers, which failed with the same `'v8::External::Value': function does not take 0 arguments` error that pushed v0.1.9 to disable rebuilds in the first place.
+- **The fix path:** Electron 38 LTS bundles V8 12.x (old `External::Value()` API still present) AND better-sqlite3@12.10.0 publishes an electron-v38 prebuild on npm. The env-var-targeted install in `release.yml` now grabs that prebuild, electron-builder packages it as-is, runtime ABI matches at app launch.
+- Electron 38 LTS is the current LTS as of mid-2026; supported through to 2027. Will rev to 39 → 40 → 42 again once better-sqlite3 publishes a fix for V8 13 (issue tracked upstream in WiseLibs/better-sqlite3).
+
+### Changes
+
+- `package.json` — `"electron": "^42.1.0"` → `"^38.0.0"`. Resolves to `38.8.6` via `npm install`.
+- `package-lock.json` — refreshed to reflect Electron 38.8.6 and its transitive deps.
+- `.github/workflows/release.yml` — `npm_config_target` env on the Install step bumped from `"42.1.0"` to `"38.8.6"`.
+
+### Upgrade notes
+
+- Install v0.1.26 on Windows. The shipped `better_sqlite3.node` finally has the right ABI to load under the desktop's Electron 38 runtime. Hit `/api/corpus/diag` — `engineLoaded` should be `true`, all four lookup probes (including the `38.211 §7.4.2.2` ancestor case) should report `hit: true`, View clause buttons should appear in AI Triage.
+- The corpus you already downloaded (rel17-v3) is fine.
+- Behaviour parity vs Electron 42: no user-visible changes expected. Electron 38 has the same `BrowserWindow`, `app.getPath`, `process.resourcesPath`, and `ELECTRON_RUN_AS_NODE` semantics we depend on.
+
+---
+
 ## v0.1.25 — Download better-sqlite3's Electron-42 prebuild instead of compiling
+
+**Tagged:** 2026-05-20
+**Published:** Never — prebuild-install couldn't find an electron-v42 prebuild for better-sqlite3@12.10.0 on npm and fell back to compile, which fails on V8 13. Same fix path shipped as v0.1.26 via Electron downgrade.
 
 **Tagged:** —
 **Published:** —

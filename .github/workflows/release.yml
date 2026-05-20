@@ -46,23 +46,30 @@ jobs:
           node-version: "20"
           cache: "npm"
 
-      # better-sqlite3's postinstall runs `prebuild-install` which, by
-      # default, downloads the prebuild matching the running Node ABI
-      # (NODE_MODULE_VERSION 115 = Node 20 on this runner). At runtime
-      # Electron 42 (NODE_MODULE_VERSION 146) refuses to dlopen that
-      # binary (ERR_DLOPEN_FAILED, the bug that v0.1.22's diag exposed
-      # on the user's Windows install). Setting `npm_config_runtime` +
-      # `npm_config_target` BEFORE `npm ci` makes prebuild-install grab
-      # the Electron-targeted prebuild (`electron-v42-…tar.gz`) instead.
-      # We cannot use @electron/rebuild as an alternative because
-      # better-sqlite3@12.10.0's C++ source uses zero-arg
-      # `v8::External::Value()` which V8 13 (in Electron 42) removed
-      # — the local compile fails on every OS. Downloading a pre-built
-      # Electron-42 binary sidesteps the compile path entirely.
-      - name: Install dependencies (with Electron-42 prebuild targeting)
+      # better-sqlite3's postinstall runs `prebuild-install`, which by
+      # default downloads the prebuild matching the running Node ABI
+      # (Node 20 on this runner = NODE_MODULE_VERSION 115). At runtime
+      # the desktop's Electron process needs the binary's ABI to match
+      # Electron's NODE_MODULE_VERSION — Node 20's prebuild won't load
+      # under Electron, producing ERR_DLOPEN_FAILED (the bug v0.1.22's
+      # diag exposed on the user's Windows install).
+      #
+      # We pin Electron to ^38.0.0 (resolved: 38.8.6, V8 12.x) because:
+      #   1. better-sqlite3@12.10.0 publishes electron-v38 prebuilds —
+      #      prebuild-install can download them, no compile needed.
+      #   2. Electron 42 + V8 13 broke better-sqlite3@12.10.0's C++
+      #      (zero-arg `v8::External::Value()` removed); @electron/rebuild
+      #      compilation against Electron 42 headers fails identically
+      #      on every OS. Electron 38's V8 12 still has the old API.
+      #
+      # `npm_config_runtime=electron` + `npm_config_target` BEFORE
+      # `npm ci` makes prebuild-install fetch the electron-v38 binary
+      # for the runner's OS (auto-detected). electron-builder then
+      # packages it as-is (`npmRebuild: false`).
+      - name: Install dependencies (Electron-targeted prebuild)
         env:
           npm_config_runtime: electron
-          npm_config_target: "42.1.0"
+          npm_config_target: "38.8.6"
           npm_config_disturl: https://electronjs.org/headers
         run: npm ci
 
