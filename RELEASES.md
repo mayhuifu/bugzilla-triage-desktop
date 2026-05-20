@@ -12,6 +12,53 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.23 — Fix NODE_MODULE_VERSION ABI mismatch — better-sqlite3 now rebuilt against Electron 42
+
+**Tagged:** —
+**Published:** —
+
+### The actual bug
+
+Diag JSON from a v0.1.22 install on Windows revealed this:
+
+```
+The module 'better_sqlite3.node' was compiled against a different Node.js
+version using NODE_MODULE_VERSION 115. This version of Node.js requires
+NODE_MODULE_VERSION 146.
+```
+
+| ABI | Runtime |
+|---|---|
+| 115 | Node.js 20 (what `actions/setup-node@v4 node-version: "20"` provides during `npm ci`) |
+| 146 | **Electron 42** (the runtime that loads the .node file at app launch) |
+
+So `npm ci` on every CI runner has been downloading better-sqlite3's Node-20 prebuild, and `electron-builder.json`'s `"npmRebuild": false` (set in v0.1.9) prevented the rebuild step that would normally swap that out for an Electron-42-targeted binary. Every installer from v0.1.10 onward has shipped a `.node` file Electron 42 can't dlopen. The reason the bug only surfaced now is that v0.1.9 didn't actually need the corpus engine to load — v0.1.10 introduced the corpus retriever, and the lazy-require in v0.1.17 hid the failure further (download succeeded, retrieval silently no-op'd).
+
+### The fix
+
+`electron-builder.json` → `"npmRebuild": true`. electron-builder then runs `@electron/rebuild` (bundled internally) during packaging, which:
+
+1. Calls `prebuild-install --runtime=electron --target=42.x` to fetch the Electron-targeted better-sqlite3 prebuild from npm; or
+2. Falls back to compiling against `electron/headers` with VS C++ tools (windows-latest runner has these by default).
+
+Either way the shipped `.node` file's ABI now matches Electron 42's runtime, so `new Database(...)` in `lib/corpus/store.ts` succeeds and `engineLoaded` flips to true. Every downstream feature (corpus banner state, RAG toggle, View clause button, ancestor-prefix lookup, hybrid retrieval scaffolding) starts working without further changes.
+
+### Why this was disabled in v0.1.9 (history)
+
+v0.1.9's release notes documented a one-off failure: older better-sqlite3 + Electron 42 V8 13 headers couldn't compile on macOS (`'Value' declared here` C++ error). The workaround was `npmRebuild: false` — which silently shipped the wrong ABI from then on. better-sqlite3 12.10.0 has since fixed the V8 13 compatibility, so the rebuild should succeed on all three platforms now. If macOS regresses, `fail-fast: false` in the workflow (also added in v0.1.9) means Windows + Linux still ship.
+
+### Changes
+
+- `electron-builder.json` — `"npmRebuild": false` → `"npmRebuild": true`. Plus a `_npmRebuildHistory` key documenting why this is now the value, so future maintainers don't toggle it off without understanding the trade-off.
+
+### Upgrade notes
+
+- **All v0.1.x users:** install v0.1.23, click corpus banner's Download (if rel17-v3 isn't already on disk) — once the engine successfully opens the SQLite, every cited clause that has a corpus match will show the green `[corpus]` chip and a **View clause** button.
+- **No corpus re-download is required if you already have rel17-v3 installed.** The corpus file itself is fine; only the app's ability to open it was broken.
+- **macOS / Linux installers:** if their CI builds fail because better-sqlite3 can't compile from source, that's a separate fix — but the existing arm64 macOS installer (and ubuntu-latest AppImage) should still build because better-sqlite3 12.10.0 ships prebuilds for `electron-v42-darwin-arm64` and `electron-v42-linux-x64`. We'll know in ~10 minutes.
+
+---
+
 ## v0.1.22 — Diag endpoint now reports file-existence and db-open errors
 
 **Tagged:** —

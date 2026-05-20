@@ -11,7 +11,8 @@
   "asarUnpack": [
     "**/*.node"
   ],
-  "npmRebuild": false,
+  "_npmRebuildHistory": "v0.1.9 turned this off because the older better-sqlite3 + Electron 42 V8 13 combo failed to compile on macOS ('Value' declared here). The trade-off was that better-sqlite3's Node-ABI prebuild (NODE_MODULE_VERSION 115 = Node 20) shipped unchanged — at runtime Electron 42 (NODE_MODULE_VERSION 146) couldn't load it (ERR_DLOPEN_FAILED), which produced silent engineLoaded=false on every installer from v0.1.10..v0.1.22. v0.1.23 turns it back on; @electron/rebuild fetches the Electron-targeted prebuild (or recompiles) so the .node binary matches the runtime ABI. fail-fast:false in CI guarantees per-platform regressions don't sink the others.",
+  "npmRebuild": true,
 
   "files": [
     "electron/**/*",
