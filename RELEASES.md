@@ -12,6 +12,39 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.25 — Download better-sqlite3's Electron-42 prebuild instead of compiling
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **The real fix for the NODE_MODULE_VERSION 115 vs 146 ABI mismatch.** v0.1.24's `npmRebuild: true` correctly *tried* to compile better-sqlite3 against Electron 42's headers, but better-sqlite3@12.10.0's C++ source uses zero-arg `v8::External::Value()` which V8 13 (shipped in Electron 42) removed. Build failed identically on Windows, macOS, and Linux:
+  ```
+  error C2660: 'v8::External::Value': function does not take 0 arguments
+  ```
+  This is the exact failure v0.1.9 originally worked around by setting `npmRebuild: false`. The escape hatch we need isn't to compile from source — it's to **download a pre-built binary that matches Electron 42's ABI**. better-sqlite3 publishes those on npm.
+- **Set `npm_config_runtime=electron` + `npm_config_target=42.1.0` before `npm ci`.** That tells `prebuild-install` (better-sqlite3's postinstall step) to fetch `electron-v42-…tar.gz` from the npm prebuild mirror instead of the default `node-v115-…tar.gz`. The shipped `.node` binary then has NODE_MODULE_VERSION 146 from the start; no rebuild needed.
+
+### Changes
+
+- `.github/workflows/release.yml` — added `env:` block to the "Install dependencies" step:
+  ```yaml
+  env:
+    npm_config_runtime: electron
+    npm_config_target: "42.1.0"
+    npm_config_disturl: https://electronjs.org/headers
+  run: npm ci
+  ```
+- `electron-builder.json` — `"npmRebuild": false` (reverted from v0.1.24's `true`). Since the prebuild already has the right ABI, no rebuild step is needed; and skipping it avoids the broken-compile path.
+
+### Upgrade notes
+
+- Install v0.1.25 on Windows. The installer now contains a `better_sqlite3.node` matching Electron 42's ABI 146. Hit `/api/corpus/diag` again — `engineLoaded` should flip to `true`, `openError` should be `null`, the schema columns should populate, and all four lookup probes (including the `38.211 §7.4.2.2` ancestor case) should report `hit: true`.
+- The corpus file you already downloaded (rel17-v3) is fine — only the engine's ability to *open* it was broken.
+
+---
+
 ## v0.1.24 — Same ABI fix as v0.1.23 minus the schema-illegal comment key
 
 **Tagged:** —

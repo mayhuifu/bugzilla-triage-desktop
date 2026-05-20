@@ -46,7 +46,24 @@ jobs:
           node-version: "20"
           cache: "npm"
 
-      - name: Install dependencies
+      # better-sqlite3's postinstall runs `prebuild-install` which, by
+      # default, downloads the prebuild matching the running Node ABI
+      # (NODE_MODULE_VERSION 115 = Node 20 on this runner). At runtime
+      # Electron 42 (NODE_MODULE_VERSION 146) refuses to dlopen that
+      # binary (ERR_DLOPEN_FAILED, the bug that v0.1.22's diag exposed
+      # on the user's Windows install). Setting `npm_config_runtime` +
+      # `npm_config_target` BEFORE `npm ci` makes prebuild-install grab
+      # the Electron-targeted prebuild (`electron-v42-…tar.gz`) instead.
+      # We cannot use @electron/rebuild as an alternative because
+      # better-sqlite3@12.10.0's C++ source uses zero-arg
+      # `v8::External::Value()` which V8 13 (in Electron 42) removed
+      # — the local compile fails on every OS. Downloading a pre-built
+      # Electron-42 binary sidesteps the compile path entirely.
+      - name: Install dependencies (with Electron-42 prebuild targeting)
+        env:
+          npm_config_runtime: electron
+          npm_config_target: "42.1.0"
+          npm_config_disturl: https://electronjs.org/headers
         run: npm ci
 
       # Per-OS build target. `dist:win` etc. each chain `next build` first,

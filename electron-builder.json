@@ -11,7 +11,7 @@
   "asarUnpack": [
     "**/*.node"
   ],
-  "npmRebuild": true,
+  "npmRebuild": false,
 
   "files": [
     "electron/**/*",
