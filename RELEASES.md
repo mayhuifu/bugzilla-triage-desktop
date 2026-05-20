@@ -12,6 +12,40 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.10 — Corpus v2 support + Initial Classification UX (short summary, real tables in drawer)
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **Corpus v2 support.** Reads the upcoming `rel17-v2` corpus that ships sqlite-vec dense vectors, a wider FTS5 index (parent_title + path), an acronyms table, and `meta.schemaVersion=2`. Stays fully backward-compatible with installed v1 corpora — schemaVersion is detected at open time and the retriever picks `bm25-v1` / `bm25-v2` / `hybrid-rrf` accordingly. Full hybrid retrieval lights up automatically once a query-time embedder is registered via `setCorpusEmbedder()` (bundling the embedder ONNX is a separate follow-up).
+- **Initial Classification panel: short summary in main view, full clause in the drawer.** Previously the editable textarea under each corpus-matched spec reference was pre-filled with the full clause text — often hundreds of lines. Now it shows a ~280-char auto-condensed summary (sentence-aware). The full corpus text remains a click away via **View clause** → SpecDrawer. Edits in the main textarea write to `summary`, which is what the comment header builder now prefers — so what you see is what gets posted to Bugzilla.
+- **Real HTML tables in the drawer.** Clauses with tables used to render as walls of `| pipe | rows |` in a `<pre>`. Now the drawer reads the v2 corpus's structured `tables_json` and renders proper `<table>` elements (with header-row heuristic, striped rows, horizontal scroll for wide tables). v1 corpora fall back to a heuristic pipe-row parser. Figure references are listed below the clause body when present.
+- **Acronym-expanded queries.** On v2 corpora, the retriever expands common 3GPP acronyms (PUSCH ↔ Physical Uplink Control Channel, BWP ↔ Bandwidth Part, etc.) from the corpus's `acronyms` table before BM25 — so a bug text using only the abbreviation still finds clauses that spell it out.
+- **Sister-repo release**: corresponds to [bugzilla-triage-corpus PR #1](https://github.com/mayhuifu/bugzilla-triage-corpus/pull/1) shipping the v2 corpus build pipeline. This desktop release lands first so the v2 corpus has a consumer ready when it publishes.
+
+### Changes
+
+- `package.json` — added `sqlite-vec` dependency (optional native loader; falls back gracefully on hosts where the per-platform binary isn't available).
+- `lib/corpus/manifest.ts` — accept `schemaVersion ∈ {1, 2}` (previously hard-coded `1`).
+- `lib/corpus/store.ts` — best-effort load of the `sqlite-vec` extension on db open. Detects whether the open corpus actually carries a `clauses_vec` table. New `corpusHasVectors()` helper. Webpack-safe binary resolution via a `process.cwd()/node_modules/sqlite-vec-<plat>-<arch>/vec0.<ext>` fallback so Next.js bundling can't break the load.
+- `lib/corpus/acronyms.ts` (new) — lazily reads the acronyms table; `expandAcronyms()` appends expansion-tokens to a tokenised bug-text query.
+- `lib/corpus/embedder.ts` (new) — pluggable `CorpusEmbedder` interface plus `setCorpusEmbedder()` for late-binding a runtime embedder. Stub returns null in this release; bundling the actual ONNX is a follow-up.
+- `lib/corpus/retriever.ts` — `decidePath()` picks `bm25-v1` (v1 corpus) / `bm25-v2` (v2 corpus, BM25 over wider FTS5 + acronym expansion) / `hybrid-rrf` (v2 corpus + embedder registered + model match). New `retrieveContextAsync()` exposes the hybrid path; sync `retrieveContext()` kept for back-compat and always uses BM25. `lookupClause()` now surfaces `tables[]` + `figures[]` from `tables_json` / `figures_json` on v2 corpora.
+- `app/api/tickets/[id]/triage/route.ts` + `…/followup/route.ts` — switch to `await retrieveContextAsync(ticket)` so hybrid activates the moment an embedder lands.
+- `lib/llm.ts` — `enrichExcerptsWithCorpus()` auto-condenses corpus `realText` into a short `summary` (~280 chars, sentence-aware) when the model didn't supply one. `pickHeaderBody()` inverted to prefer the user-editable `summary` over the full `realText`. `realText` stays intact in the excerpt as the source of truth for the drawer.
+- `components/triage/TriageChatPanel.tsx` — Initial Classification textarea binds to `summary` (always); edits target `summary` not `realText`; reduced from 4 rows to 2.
+- `components/triage/SpecDrawer.tsx` — renders v2 structured tables as real `<table>`s (header heuristic, striped rows, horizontal-scroll overflow). Pipe-row leftovers stripped from the flattened text when structured tables are present. v1 fallback parses pipe-rows heuristically. Figure references listed under the body.
+
+### Upgrade notes
+
+- Purely additive — existing v1 corpora work unchanged on the v1 retrieval path. No settings.json schema bump.
+- The new `sqlite-vec` dep is optional at runtime: if its per-platform binary isn't installed the retriever logs `[corpus] sqlite-vec not loaded` once and continues with BM25-only. `electron-builder` packages whatever native binaries are in `node_modules` at build time.
+- The full ~25-point hybrid-retrieval precision lift (per Telco-DPR / TelcoAI benchmarks) is dormant in this release because no query-time embedder is bundled yet — only the wider FTS5 index + acronym expansion contribute to v2's precision over v1. Bundling the embedder is a separate follow-up PR.
+
+---
+
 ## v0.1.9 — v0.1.8 features + CI fix (better-sqlite3 native rebuild)
 
 **Tagged:** 2026-05-17  

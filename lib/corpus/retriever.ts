@@ -27,6 +27,22 @@ import { corpusHasVectors, getCorpusDb } from "./store";
 import { expandAcronyms } from "./acronyms";
 import { getCorpusEmbedder } from "./embedder";
 
+/** Structured table lifted from the v2 corpus's `tables_json` column.
+ *  The corpus pipeline (bugzilla-triage-corpus 02-parse.ts) extracts these
+ *  during parsing — alongside the flattened pipe-separated text the FTS
+ *  index sees — so the desktop renderer can show real <table>s instead
+ *  of walls of pipes. v1 corpora don't carry this. */
+export interface ClauseTable {
+  id: string;
+  caption: string;
+  rows: string[][];
+}
+
+export interface ClauseFigure {
+  id: string;
+  caption: string;
+}
+
 export interface RetrievedClause {
   clauseId: string;          // canonical id, e.g. "38.211#6.1.4"
   citation: string;          // human-readable, e.g. "3GPP TS 38.211 §6.1.4"
@@ -36,6 +52,10 @@ export interface RetrievedClause {
   bm25Score?: number;        // negative number; lower (more negative) = better
   /** Retrieval source label for the SpecDrawer / debug surface. */
   retrieverPath?: "bm25-v1" | "bm25-v2" | "hybrid-rrf";
+  /** Structured tables (v2 only). Empty array on v1 corpora. */
+  tables?: ClauseTable[];
+  /** Figure references (v2 only). */
+  figures?: ClauseFigure[];
 }
 
 const TOP_K = 4;
@@ -306,21 +326,61 @@ export function lookupClause(reference: string): RetrievedClause | null {
   if (!parsed) return null;
   const id = `${parsed.spec}#${parsed.clauseNo}`;
   try {
-    const row = db.prepare(`
-      SELECT id, citation, title, parent_title, text
-      FROM clauses WHERE id = ?
-    `).get(id) as { id: string; citation: string; title: string; parent_title: string | null; text: string } | undefined;
+    // v2 adds tables_json + figures_json columns. Read them with COALESCE
+    // so this same query works against v1 corpora too (where the columns
+    // are absent — SQLite would error on a bare SELECT of a missing column).
+    // We resolve the schema once per process.
+    const hasV2Cols = corpusHasV2Columns(db);
+    interface V1Row { id: string; citation: string; title: string; parent_title: string | null; text: string; }
+    interface V2Row extends V1Row { tables_json: string; figures_json: string; }
+    const row = hasV2Cols
+      ? (db.prepare(`
+          SELECT id, citation, title, parent_title, text,
+                 COALESCE(tables_json, '[]')  AS tables_json,
+                 COALESCE(figures_json, '[]') AS figures_json
+          FROM clauses WHERE id = ?
+        `).get(id) as V2Row | undefined)
+      : (db.prepare(`
+          SELECT id, citation, title, parent_title, text
+          FROM clauses WHERE id = ?
+        `).get(id) as V1Row | undefined);
     if (!row) return null;
+    const v2row = hasV2Cols ? (row as V2Row) : null;
     return {
       clauseId: row.id,
       citation: row.citation,
       title: row.title,
       parentTitle: row.parent_title ?? undefined,
       text: row.text,
+      tables: v2row ? safeJsonArray<ClauseTable>(v2row.tables_json) : [],
+      figures: v2row ? safeJsonArray<ClauseFigure>(v2row.figures_json) : [],
     };
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn(`[corpus] lookupClause(${reference}) failed:`, err);
     return null;
+  }
+}
+
+let _v2ColsChecked = false;
+let _v2ColsPresent = false;
+function corpusHasV2Columns(db: import("better-sqlite3").Database): boolean {
+  if (_v2ColsChecked) return _v2ColsPresent;
+  _v2ColsChecked = true;
+  try {
+    const cols = db.prepare("PRAGMA table_info('clauses')").all() as Array<{ name: string }>;
+    _v2ColsPresent = cols.some(c => c.name === "tables_json");
+  } catch {
+    _v2ColsPresent = false;
+  }
+  return _v2ColsPresent;
+}
+
+function safeJsonArray<T>(s: string): T[] {
+  try {
+    const parsed = JSON.parse(s) as unknown;
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
   }
 }

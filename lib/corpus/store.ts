@@ -88,14 +88,40 @@ export function getCorpusDb(): Database.Database | null {
 
 /** Best-effort load of the sqlite-vec extension. Returns false (and logs)
  *  when the package isn't installed or the native binary is missing for
- *  this platform — the retriever then falls back to BM25-only. */
+ *  this platform — the retriever then falls back to BM25-only.
+ *
+ *  Loading strategy: sqlite-vec's official loader calls require.resolve()
+ *  for the .dylib/.so/.dll subpath inside its per-platform sub-package.
+ *  Next.js Webpack can't statically resolve those non-JS subpaths and
+ *  errors out, so we keep that as the first attempt (works in pure-Node
+ *  via tsx/electron) and fall back to a manual path lookup under
+ *  process.cwd()/node_modules that Webpack leaves alone at build time. */
 function tryLoadSqliteVec(db: Database.Database): boolean {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const sqliteVec = (() => {
+    try {
+      return require("sqlite-vec") as { load: (d: Database.Database) => void };
+    } catch {
+      return null;
+    }
+  })();
+  if (sqliteVec) {
+    try { sqliteVec.load(db); return true; } catch { /* fall through */ }
+  }
+  // Manual path resolution. Webpack can't statically analyse a path that
+  // is built up at runtime from process.platform / process.arch, so this
+  // survives bundling.
   try {
-    // Dynamically required so the dependency stays optional at runtime —
-    // tests / minimal builds without sqlite-vec installed still work.
+    const platDir =
+      process.platform === "win32"
+        ? `sqlite-vec-windows-${process.arch}`
+        : `sqlite-vec-${process.platform}-${process.arch}`;
+    const ext =
+      process.platform === "win32" ? "dll" : process.platform === "darwin" ? "dylib" : "so";
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const sqliteVec = require("sqlite-vec") as { load: (d: Database.Database) => void };
-    sqliteVec.load(db);
+    const path = require("node:path") as typeof import("node:path");
+    const candidate = path.join(process.cwd(), "node_modules", platDir, `vec0.${ext}`);
+    db.loadExtension(candidate);
     return true;
   } catch (err) {
     // eslint-disable-next-line no-console

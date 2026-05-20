@@ -29,12 +29,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { X, Copy, CheckCircle2, ExternalLink, Loader2, AlertCircle, BookText } from "lucide-react";
 
+interface ClauseTableData {
+  id: string;
+  caption: string;
+  rows: string[][];
+}
+
+interface ClauseFigureData {
+  id: string;
+  caption: string;
+}
+
 interface ClauseResponse {
   clauseId: string;
   citation: string;
   title: string;
   parentTitle?: string;
   text: string;
+  tables?: ClauseTableData[];
+  figures?: ClauseFigureData[];
 }
 
 interface Props {
@@ -186,7 +199,7 @@ export function SpecDrawer({ citation, onClose }: Props) {
             </div>
           )}
 
-          {clause && <ClauseBody text={clause.text} />}
+          {clause && <ClauseBody clause={clause} />}
         </div>
 
         {/* Footer */}
@@ -232,13 +245,47 @@ function specLandingUrl(citation: string): string | null {
   return `https://www.3gpp.org/ftp/Specs/archive/${series}_series/${spec}/`;
 }
 
-/** Render a clause body, lifting the parser's pipe-separated table rows
- *  (`| cell | cell | cell`) back into HTML <table>s. The parser flattens
- *  DOCX tables to that shape for FTS-text purposes, so out of the box a
- *  table renders as a wall of pipes in a <pre>. We split the body into
- *  alternating prose/table segments and render each appropriately. */
-function ClauseBody({ text }: { text: string }) {
-  const segments = parseClauseSegments(text);
+/** Render a clause body. When the v2 corpus's structured `tables` array
+ *  is present, we render it as real HTML <table>s and strip the broken
+ *  pipe-row leftovers from the flattened text. Otherwise (v1 corpus, or
+ *  a clause without structured tables) we fall back to the old
+ *  text-only render with a heuristic pipe-row → table parser. */
+function ClauseBody({ clause }: { clause: ClauseResponse }) {
+  const hasStructuredTables = (clause.tables?.length ?? 0) > 0;
+  if (hasStructuredTables) {
+    const cleaned = stripPipeRows(clause.text);
+    return (
+      <div className="text-xs text-slate-200 leading-relaxed space-y-3">
+        {cleaned && (
+          <pre className="whitespace-pre-wrap font-mono leading-relaxed">
+            {cleaned}
+          </pre>
+        )}
+        {clause.tables!.map((t, i) => (
+          <div key={t.id || i}>
+            {t.caption && (
+              <div className="text-[11px] text-slate-400 font-medium mb-1">
+                {t.caption}
+              </div>
+            )}
+            <ClauseTable rows={t.rows} />
+          </div>
+        ))}
+        {(clause.figures?.length ?? 0) > 0 && (
+          <div className="text-[11px] text-slate-500 italic space-y-0.5 pt-2 border-t border-bg-border/30">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 not-italic mb-0.5">
+              Figures referenced
+            </div>
+            {clause.figures!.map((f, i) => (
+              <div key={f.id || i}>{f.id.split("/").pop()}{f.caption ? `: ${f.caption}` : ""}</div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+  // Fallback: parse pipe-row segments client-side (v1 corpus path).
+  const segments = parseClauseSegments(clause.text);
   return (
     <div className="text-xs text-slate-200 leading-relaxed space-y-3">
       {segments.map((seg, i) =>
@@ -255,6 +302,18 @@ function ClauseBody({ text }: { text: string }) {
       )}
     </div>
   );
+}
+
+/** Drop lines that look like pipe-separated table cells. Conservative —
+ *  only matches lines whose first non-whitespace character is `|`. Keeps
+ *  prose containing literal pipes (e.g. command examples mid-sentence). */
+function stripPipeRows(text: string): string {
+  return text
+    .split("\n")
+    .filter(ln => !/^\s*\|/.test(ln))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function ClauseTable({ rows }: { rows: string[][] }) {
