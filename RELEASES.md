@@ -12,6 +12,28 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.13 — Restore "View clause" button when model cites a non-leaf section
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **"View clause" button reappears for section-level citations.** Models tend to cite at section granularity (e.g. `TS 38.331 §5.3.5`), but the corpus only stores leaf clauses (`5.3.5.1`, `5.3.5.2`, …). v0.1.10–v0.1.12 silently dropped those references because `lookupClause` returns null on a non-leaf id — and no `clauseId` means the Initial Classification bubble doesn't show the "View clause" button at all. v0.1.13 adds an ancestor-prefix fallback: if the exact id misses, look for the lexically smallest leaf under the cited prefix and return that. The button comes back; the drawer shows real content.
+- **Ancestor-match hint in the drawer.** When the lookup falls back to a descendant, the drawer shows an amber notice: *"The cited reference TS 38.331 §5.3.5 is a parent section. Showing its first leaf clause TS 38.331 §5.3.5.1."* — so users can see exactly which clause is being displayed and why it differs from the cited reference.
+
+### Changes
+
+- `lib/corpus/retriever.ts` — `lookupClause()` gains a `LIKE '<id>.%'` ancestor fallback after the exact PK miss, ordered by id, limit 1. Returns the leaf with new `matchedAs: "exact" | "ancestor"` and `requestedClauseId` fields so the UI knows whether to show the hint.
+- `components/triage/SpecDrawer.tsx` — renders the ancestor-match hint banner above the clause body when `matchedAs === "ancestor"`.
+
+### Upgrade notes
+
+- Purely additive on the corpus side (no schema bump). The fields `matchedAs` / `requestedClauseId` default to `"exact"` / `undefined` for direct hits so no caller breaks.
+- The fallback is conservative: it only triggers when there's no exact match, and only walks one level of LIKE matching. Cross-spec / cross-section guesses are not attempted.
+
+---
+
 ## v0.1.12 — CI release fix: route artifacts straight to the Release, skip workflow-artifact upload on tag pushes
 
 **Tagged:** —

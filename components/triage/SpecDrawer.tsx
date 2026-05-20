@@ -48,6 +48,11 @@ interface ClauseResponse {
   text: string;
   tables?: ClauseTableData[];
   figures?: ClauseFigureData[];
+  matchedAs?: "exact" | "ancestor";
+  /** When matchedAs === "ancestor", the original (parent / non-leaf)
+   *  id the user clicked. The drawer shows a hint so it's obvious the
+   *  citation in the header differs from what was clicked. */
+  requestedClauseId?: string;
 }
 
 interface Props {
@@ -174,6 +179,17 @@ export function SpecDrawer({ citation, onClose }: Props) {
             <X className="w-4 h-4" />
           </button>
         </div>
+
+        {/* Ancestor-match hint — shown when the requested citation was a
+            non-leaf section and we resolved to its first descendant leaf. */}
+        {clause?.matchedAs === "ancestor" && clause.requestedClauseId && (
+          <div className="px-4 py-2 border-b border-bg-border/40 bg-amber-500/5 text-[11px] text-amber-200/80 flex items-start gap-2">
+            <span className="font-mono shrink-0">ℹ︎</span>
+            <span>
+              The cited reference <span className="font-mono">{clause.requestedClauseId.replace("#", " §")}</span> is a parent section. Showing its first leaf clause <span className="font-mono">{clause.clauseId.replace("#", " §")}</span>.
+            </span>
+          </div>
+        )}
 
         {/* Body — fetch state machine */}
         <div className="flex-1 overflow-y-auto p-4 min-h-0">

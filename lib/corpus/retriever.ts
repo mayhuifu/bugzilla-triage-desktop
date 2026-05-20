@@ -56,6 +56,13 @@ export interface RetrievedClause {
   tables?: ClauseTable[];
   /** Figure references (v2 only). */
   figures?: ClauseFigure[];
+  /** Whether the lookup hit the exact cited clause id, or fell back to
+   *  the closest descendant leaf because the cited id was a non-leaf
+   *  parent section. UI shows a hint when "ancestor". */
+  matchedAs?: "exact" | "ancestor";
+  /** Populated only when `matchedAs === "ancestor"`: the parent id the
+   *  user / model cited, which the lookup couldn't satisfy directly. */
+  requestedClauseId?: string;
 }
 
 const TOP_K = 4;
@@ -333,17 +340,57 @@ export function lookupClause(reference: string): RetrievedClause | null {
     const hasV2Cols = corpusHasV2Columns(db);
     interface V1Row { id: string; citation: string; title: string; parent_title: string | null; text: string; }
     interface V2Row extends V1Row { tables_json: string; figures_json: string; }
-    const row = hasV2Cols
-      ? (db.prepare(`
+    const selectExact = hasV2Cols
+      ? db.prepare(`
           SELECT id, citation, title, parent_title, text,
                  COALESCE(tables_json, '[]')  AS tables_json,
                  COALESCE(figures_json, '[]') AS figures_json
           FROM clauses WHERE id = ?
-        `).get(id) as V2Row | undefined)
-      : (db.prepare(`
+        `)
+      : db.prepare(`
           SELECT id, citation, title, parent_title, text
           FROM clauses WHERE id = ?
-        `).get(id) as V1Row | undefined);
+        `);
+    // Exact PK match first.
+    let row = selectExact.get(id) as V1Row | V2Row | undefined;
+    let matchedAs: "exact" | "ancestor" = "exact";
+
+    // Ancestor fallback: models tend to cite at section level (e.g.
+    // "TS 38.331 §5.3.5") but the corpus only holds LEAF clauses
+    // (5.3.5.1, 5.3.5.2, …). Without this fallback the lookup returns
+    // null for those citations, the UI's "View clause" button stays
+    // hidden, and the model's reference looks useless to the user.
+    // Resolve to the lexically smallest leaf under the cited prefix —
+    // typically the "general" / index sub-clause that introduces the
+    // section. Use lexical ordering of dotted-number ids; that orders
+    // 5.3.5.1 < 5.3.5.10 < 5.3.5.2, which is wrong arithmetically but
+    // the FIRST leaf is what we want, so it's fine (we'd always pick
+    // 5.3.5.1 over 5.3.5.10 even in arithmetic order).
+    if (!row) {
+      const selectAncestor = hasV2Cols
+        ? db.prepare(`
+            SELECT id, citation, title, parent_title, text,
+                   COALESCE(tables_json, '[]')  AS tables_json,
+                   COALESCE(figures_json, '[]') AS figures_json
+            FROM clauses
+            WHERE id LIKE ? ESCAPE '\\'
+            ORDER BY id
+            LIMIT 1
+          `)
+        : db.prepare(`
+            SELECT id, citation, title, parent_title, text
+            FROM clauses
+            WHERE id LIKE ? ESCAPE '\\'
+            ORDER BY id
+            LIMIT 1
+          `);
+      // LIKE pattern: literal `<spec>#<clauseNo>.%`. The % only matches
+      // after a literal dot, so we don't pick up siblings like
+      // `5.3.50.x` when the cited prefix was `5.3.5`.
+      const escaped = id.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+      row = selectAncestor.get(`${escaped}.%`) as V1Row | V2Row | undefined;
+      if (row) matchedAs = "ancestor";
+    }
     if (!row) return null;
     const v2row = hasV2Cols ? (row as V2Row) : null;
     return {
@@ -354,6 +401,8 @@ export function lookupClause(reference: string): RetrievedClause | null {
       text: row.text,
       tables: v2row ? safeJsonArray<ClauseTable>(v2row.tables_json) : [],
       figures: v2row ? safeJsonArray<ClauseFigure>(v2row.figures_json) : [],
+      matchedAs,
+      requestedClauseId: matchedAs === "ancestor" ? id : undefined,
     };
   } catch (err) {
     // eslint-disable-next-line no-console
