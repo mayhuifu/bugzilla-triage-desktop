@@ -12,6 +12,33 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.22 — Diag endpoint now reports file-existence and db-open errors
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **`/api/corpus/diag` now shows why `engineLoaded` is false** when `engineError` is null. Three new fields explain the most common cases:
+  - `fileExists` — does `corpus.sqlite` exist on disk at the expected path?
+  - `fileSizeBytes` — its size (0 = truncated, ~10–55 MB = healthy)
+  - `dirExists` + `dirContents` — what's actually in the corpus directory (handy when the install renamed something)
+  - `openError` — the exact error string when `new Database(...)` throws (e.g. SQLITE_NOTADB on a corrupt file, EBUSY on a lock)
+  - `fileExistedOnLastOpen` — what the store believed at its last try
+- **Reveals install-state bugs that v0.1.20's diag missed.** A user reported `engineLoaded: false, engineError: null` — meaning better-sqlite3 loaded fine, but the engine still returned no DB. v0.1.22's diag will say whether that's "file is missing at expected path" or "file exists but is unreadable", which determines the recovery path (re-download vs. re-install vcredist vs. unlock the file).
+
+### Changes
+
+- `lib/corpus/store.ts` — `getCorpusDb()` now captures the file-existence check and the db-open exception into module-level state. Three new exports: `corpusOpenError()`, `corpusFileExistedOnLastTry()`, `corpusLastTriedPath()`.
+- `app/api/corpus/diag/route.ts` — extends the response with `fileExists`, `fileSizeBytes`, `fileMtime`, `dirExists`, `dirContents`, `openError`, `fileExistedOnLastOpen`.
+
+### Upgrade notes
+
+- Purely diagnostic — no behaviour change for working installs.
+- After installing v0.1.22, hit `http://localhost:3000/api/corpus/diag` again and the new fields should narrow down whatever's wrong on a broken install in one shot.
+
+---
+
 ## v0.1.21 — Default corpus URL → rel17-v3 (adds 38.304 / 38.133 / 36.304 / 36.133)
 
 **Tagged:** —

@@ -20,11 +20,14 @@
 // ──────────────────────────────────────────────────────────────────
 
 import { NextResponse } from "next/server";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   getCorpusDb,
   getCorpusMeta,
   corpusEngineError,
+  corpusOpenError,
+  corpusFileExistedOnLastTry,
   corpusPath,
 } from "@/lib/corpus/store";
 import { lookupClause } from "@/lib/corpus/retriever";
@@ -59,7 +62,32 @@ export async function GET() {
   try {
     const engineError = corpusEngineError();
     const meta = getCorpusMeta();
-    const db = getCorpusDb();
+    const db = getCorpusDb();  // populates corpusOpenError / corpusFileExistedOnLastTry
+    const p = corpusPath();
+
+    // Independent filesystem check — don't rely on the store's cached
+    // existence reading. Walks the path's parent too so we can see
+    // whether the directory itself exists (the download may have
+    // partially failed before creating corpus.sqlite).
+    let fileExists = false;
+    let fileSizeBytes: number | null = null;
+    let fileMtime: string | null = null;
+    let dirExists = false;
+    let dirContents: string[] = [];
+    try {
+      const stat = fs.statSync(p);
+      fileExists = stat.isFile();
+      fileSizeBytes = stat.size;
+      fileMtime = stat.mtime.toISOString();
+    } catch { /* ENOENT etc. — fileExists stays false */ }
+    try {
+      const parent = path.dirname(p);
+      const dstat = fs.statSync(parent);
+      dirExists = dstat.isDirectory();
+      if (dirExists) {
+        dirContents = fs.readdirSync(parent).slice(0, 20);
+      }
+    } catch { /* parent missing too */ }
 
     // Probe the schema directly. Don't trust cached state — we want the
     // ground truth as the user's process would see it RIGHT NOW.
@@ -101,11 +129,17 @@ export async function GET() {
 
     const out = {
       app: "bugzilla-triage-desktop",
-      corpusFilePath: corpusPath(),
-      // Don't leak the user's home dir — just show the suffix after appData.
-      corpusFileSuffix: path.basename(path.dirname(corpusPath())) + "/" + path.basename(corpusPath()),
+      corpusFilePath: p,
+      corpusFileSuffix: path.basename(path.dirname(p)) + "/" + path.basename(p),
+      fileExists,
+      fileSizeBytes,
+      fileMtime,
+      dirExists,
+      dirContents,
       engineLoaded: !!db,
       engineError,
+      openError: corpusOpenError(),                    // why the engine returned null even when bs3 loaded
+      fileExistedOnLastOpen: corpusFileExistedOnLastTry(),
       meta: meta ?? null,
       schema: {
         hasV2Cols,

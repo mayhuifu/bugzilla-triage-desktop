@@ -47,6 +47,13 @@ let _hasVec = false;     // true when sqlite-vec extension successfully loaded
                          // AND the corpus declares vector tables (schemaVersion>=2).
 let _bs3LoadErr: string | null = null;  // last better-sqlite3 load error, if any
 let _bs3: typeof Database | null = null;
+let _openErr: string | null = null;     // last db.open() error (separate from
+                                        // bs3 load errors so the diag endpoint
+                                        // can distinguish "file missing /
+                                        // corrupt / locked" from "native binary
+                                        // failed to load").
+let _lastTriedPath: string | null = null;
+let _fileExistedOnTry: boolean | null = null;
 
 /** Lazy-loader for better-sqlite3 so a missing/broken native binary
  *  doesn't crash module-load. First call resolves the constructor; on
@@ -99,11 +106,15 @@ export function corpusPath(): string {
  *  fact in the UI (e.g. a "download corpus" banner). */
 export function getCorpusDb(): Database.Database | null {
   const p = corpusPath();
+  _lastTriedPath = p;
   // Re-open if the path changes mid-process (download just finished and
   // renamed the file). We track _path to detect this case.
   if (_db && _path === p) return _db;
-  if (!fs.existsSync(p)) {
+  const exists = fs.existsSync(p);
+  _fileExistedOnTry = exists;
+  if (!exists) {
     if (_db) closeCorpusDb();
+    _openErr = `file does not exist at ${p}`;
     return null;
   }
   const Bs3 = loadBetterSqlite3();
@@ -111,11 +122,13 @@ export function getCorpusDb(): Database.Database | null {
     // Native binary unavailable — the rest of the app continues without
     // corpus retrieval. Caller treats null exactly like "corpus not
     // installed" and falls back to the model's training-data paraphrase.
+    _openErr = "better-sqlite3 native binary unavailable (see corpusEngineError)";
     return null;
   }
   try {
     _db = new Bs3(p, { readonly: true, fileMustExist: true });
     _path = p;
+    _openErr = null;
     // Reasonable cache size for the ~40MB v1 corpus and the larger v2.
     _db.pragma("cache_size = -10000");
     _db.pragma("journal_mode = WAL");
@@ -126,7 +139,11 @@ export function getCorpusDb(): Database.Database | null {
     return _db;
   } catch (err) {
     // Corrupt file, locked, or wrong permissions — surface as no-corpus
-    // rather than throwing. Operator can recover by re-downloading.
+    // rather than throwing. Capture the error message so /api/corpus/diag
+    // (and downstream UI hints) can show why the engine reported
+    // engineLoaded=false even though the binary was available.
+    const e = err as Error & { code?: string };
+    _openErr = `${e?.name ?? "Error"}: ${e?.message ?? String(err)}${e?.code ? ` [${e.code}]` : ""}`;
     // eslint-disable-next-line no-console
     console.warn(`[corpus] failed to open ${p}:`, err);
     _db = null;
@@ -134,6 +151,24 @@ export function getCorpusDb(): Database.Database | null {
     _hasVec = false;
     return null;
   }
+}
+
+/** Diagnostic: last db.open() failure (or "file does not exist…",
+ *  or the native-binary load error message). Used by /api/corpus/diag
+ *  so we can tell file-missing from corrupt-on-open vs engine-broken. */
+export function corpusOpenError(): string | null {
+  return _openErr;
+}
+
+/** Diagnostic: did the file exist on disk at the last getCorpusDb()
+ *  attempt? null = not yet attempted. */
+export function corpusFileExistedOnLastTry(): boolean | null {
+  return _fileExistedOnTry;
+}
+
+/** Diagnostic: path used by the last getCorpusDb() attempt. */
+export function corpusLastTriedPath(): string | null {
+  return _lastTriedPath;
 }
 
 /** Best-effort load of the sqlite-vec extension. Returns false (and logs)
