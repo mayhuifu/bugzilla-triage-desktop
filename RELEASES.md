@@ -12,7 +12,26 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.24 — Same ABI fix as v0.1.23 minus the schema-illegal comment key
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **v0.1.23 was buildable in theory but unbuildable in practice.** I added an `_npmRebuildHistory` string to `electron-builder.json` to document why `npmRebuild` flipped from false → true. electron-builder 26.8.1 validates the config against a strict JSON schema and rejects unknown properties → CI failed on every OS before even reaching the package step → no installers shipped.
+- **v0.1.24 is identical to v0.1.23 minus the comment key.** The original history / rationale lives in this release-notes file (see v0.1.23 below) plus the v0.1.23 commit message. JSON doesn't have comments and the schema doesn't allow extension fields. Lesson: don't try.
+
+### Changes
+
+- `electron-builder.json` — removed the `_npmRebuildHistory` key. `"npmRebuild": true` is preserved.
+
+---
+
 ## v0.1.23 — Fix NODE_MODULE_VERSION ABI mismatch — better-sqlite3 now rebuilt against Electron 42
+
+**Tagged:** 2026-05-20  
+**Published:** Never — CI build failed schema validation in electron-builder 26.8.1 (`_npmRebuildHistory` was not a recognised property). Same fix shipped as v0.1.24.
 
 **Tagged:** —
 **Published:** —
