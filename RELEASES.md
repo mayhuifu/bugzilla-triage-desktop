@@ -12,6 +12,31 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.21 — Default corpus URL → rel17-v3 (adds 38.304 / 38.133 / 36.304 / 36.133)
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **rel17-v3 is now the default corpus.** The companion repo published [rel17-v3](https://github.com/mayhuifu/bugzilla-triage-corpus/releases/tag/rel17-v3) — adds 38.304 (NR idle-mode RRC procedures), 38.133 (NR RRM requirements), 36.304 (LTE idle mode), and 36.133 (LTE RRM). Citations like `TS 38.304 §5.2.4.5` and `TS 38.133 §4.2` now resolve through to real leaf clauses with "View clause" buttons.
+- **Corpus size jumped** from 5,667 → 12,930 leaf clauses, and download grew from ~26 MB to ~55 MB gzipped (~160 MB on disk). 38.133 alone added 3,722 clauses; 36.133 added 3,412. These are the largest cellular specs by clause count, but worth the size because they're cited heavily in idle-mode and RRM triage.
+- **Existing rel17-v2 installs auto-upgrade.** If your `settings.json` still has the rel17-v2 default URL (i.e. you accepted the default and never edited it), `loadSettings()` rewrites it to v3 on next launch. The installed corpus file itself stays at v2 until you re-download — open Settings → Spec corpus → "Check for updates" → Install to get v3.
+
+### Changes
+
+- `lib/settings.ts` — `DEFAULT_CORPUS_MANIFEST_URL` switched to `…/rel17-v3/…`. v2 added to `LEGACY_DEFAULT_CORPUS_MANIFEST_URLS` set so existing v2-default installs migrate.
+- `components/settings/CorpusSection.tsx` — corpus-blurb stats updated (12,930 / 17,490 / 36 specs / ~55 MB compressed).
+
+### Upgrade notes
+
+- New `.exe` / `.dmg` / `.AppImage` installs: corpus banner offers rel17-v3 (~55 MB).
+- Returning v2 installs: URL rewrites silently. To upgrade the installed corpus file, click **"Check for updates"** in Settings → Spec corpus.
+- Returning v1 installs (from before v0.1.16): auto-upgrade jumps v1 → v3 directly.
+- Custom mirror URLs are untouched.
+
+---
+
 ## v0.1.20 — Diagnose missing "View clause" buttons + "spec not in corpus" UI
 
 **Tagged:** —

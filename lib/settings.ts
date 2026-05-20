@@ -96,12 +96,13 @@ interface StoredEnvelope {
   settings: Settings;
 }
 
-/** Default corpus manifest URL — the published rel17-v2 manifest on
- *  github.com/mayhuifu/bugzilla-triage-corpus. v3 (which adds 38.304 /
- *  38.133 / 36.304 / 36.133) is being built; the default URL will move
- *  to rel17-v3 in the next release once that publish lands. */
+/** Default corpus manifest URL — the published rel17-v3 manifest on
+ *  github.com/mayhuifu/bugzilla-triage-corpus. v3 adds 38.304, 38.133,
+ *  36.304, 36.133 (idle-mode RRC + RRM requirements) to the curated
+ *  set. Total: 12,930 leaf clauses + 17,490 structured tables across
+ *  36 specs, ~55 MB gzipped / ~160 MB uncompressed. */
 const DEFAULT_CORPUS_MANIFEST_URL =
-  "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v2/3gpp-corpus-rel17-v2-2026-05.manifest.json";
+  "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v3/3gpp-corpus-rel17-v3-2026-05.manifest.json";
 
 /** Legacy default URLs we've shipped. When a user's saved settings.json
  *  still has one of these (i.e. they accepted the default at install
@@ -111,6 +112,7 @@ const DEFAULT_CORPUS_MANIFEST_URL =
  *  shipped default. */
 const LEGACY_DEFAULT_CORPUS_MANIFEST_URLS = new Set([
   "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v1/3gpp-corpus-rel17-v1-2026-05.manifest.json",
+  "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v2/3gpp-corpus-rel17-v2-2026-05.manifest.json",
 ]);
 
 const EMPTY_SETTINGS: Settings = {

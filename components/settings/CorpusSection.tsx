@@ -169,9 +169,9 @@ export function CorpusSection({ manifestUrl, onManifestUrlChange }: Props) {
       </div>
       <p className="text-xs text-slate-500">
         When installed, AI triage cites <em>real</em> spec text from a local Rel-17 NR + LTE
-        corpus (5,667 leaf clauses + 9,920 tables · ~80 MB, ~26 MB compressed download)
-        instead of the model&apos;s training-data paraphrase. Triage works fine without it —
-        you can install at any time.
+        corpus (12,930 leaf clauses + 17,490 tables across 36 specs · ~160 MB, ~55 MB
+        compressed download) instead of the model&apos;s training-data paraphrase. Triage
+        works fine without it — you can install at any time.
       </p>
 
       {/* Installed-state info */}
