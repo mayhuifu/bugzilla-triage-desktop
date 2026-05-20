@@ -12,6 +12,27 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.11 — Package sqlite-vec native binaries in the installer
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **Windows / Mac / Linux installers now ship the `vec0` native binary.** v0.1.10 added the `sqlite-vec` dependency but `electron-builder.json` didn't list it under `extraResources`, so the installer's standalone Next.js bundle was missing both the JS loader and the per-platform `.dll`/`.dylib`/`.so`. Runtime fallback in `store.ts` (added in v0.1.10) covers this gracefully — the retriever just stays on BM25-only — but to unlock hybrid retrieval later we need the binary actually packaged. v0.1.11 fixes the packaging.
+- No code changes vs v0.1.10. If you already updated to v0.1.10, this release is only meaningful when an embedder gets registered (future PR); update at your convenience.
+
+### Changes
+
+- `electron-builder.json` — added `node_modules/sqlite-vec` to the top-level `extraResources` (JS loader, all platforms). Added platform-specific `extraResources` under each of `win` / `mac` / `linux` for the matching `sqlite-vec-<plat>-<arch>` binary subpackage. The store.ts cwd-based path resolution from v0.1.10 lines up with the in-installer copy location (`<resources>/app/.next/standalone/node_modules/sqlite-vec-<plat>-<arch>/vec0.<ext>`).
+
+### Upgrade notes
+
+- Purely additive. Existing v0.1.10 behaviour is unchanged.
+- Cross-OS builds (e.g. `dist:win` on a Mac) will fail to find `node_modules/sqlite-vec-windows-x64` because npm's `optionalDependencies` only install the host-matching subpackage. Build each installer on its target OS, or use the `release.yml` CI workflow which runs `dist:<os>` on the matching matrix runner.
+
+---
+
 ## v0.1.10 — Corpus v2 support + Initial Classification UX (short summary, real tables in drawer)
 
 **Tagged:** —

@@ -48,6 +48,11 @@
       "from": "node_modules/file-uri-to-path",
       "to": "app/.next/standalone/node_modules/file-uri-to-path",
       "filter": ["**/*"]
+    },
+    {
+      "from": "node_modules/sqlite-vec",
+      "to": "app/.next/standalone/node_modules/sqlite-vec",
+      "filter": ["**/*"]
     }
   ],
 
@@ -59,7 +64,14 @@
       }
     ],
     "icon": "build/icon.png",
-    "artifactName": "Bugzilla-AI-Triage-Setup-${version}.${ext}"
+    "artifactName": "Bugzilla-AI-Triage-Setup-${version}.${ext}",
+    "extraResources": [
+      {
+        "from": "node_modules/sqlite-vec-windows-x64",
+        "to": "app/.next/standalone/node_modules/sqlite-vec-windows-x64",
+        "filter": ["**/*"]
+      }
+    ]
   },
 
   "nsis": {
@@ -80,7 +92,14 @@
     ],
     "icon": "build/icon.png",
     "category": "public.app-category.developer-tools",
-    "artifactName": "Bugzilla-AI-Triage-${version}-${arch}.${ext}"
+    "artifactName": "Bugzilla-AI-Triage-${version}-${arch}.${ext}",
+    "extraResources": [
+      {
+        "from": "node_modules/sqlite-vec-darwin-arm64",
+        "to": "app/.next/standalone/node_modules/sqlite-vec-darwin-arm64",
+        "filter": ["**/*"]
+      }
+    ]
   },
 
   "linux": {
@@ -91,6 +110,13 @@
       }
     ],
     "icon": "build/icon.png",
-    "category": "Development"
+    "category": "Development",
+    "extraResources": [
+      {
+        "from": "node_modules/sqlite-vec-linux-x64",
+        "to": "app/.next/standalone/node_modules/sqlite-vec-linux-x64",
+        "filter": ["**/*"]
+      }
+    ]
   }
 }
