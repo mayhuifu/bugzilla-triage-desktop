@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { bridgeFetch, bridgeTriage } from "@/lib/bridge";
 import { buildMockDetail } from "@/lib/mock-data";
-import { retrieveContext } from "@/lib/corpus/retriever";
+import { retrieveContext, retrieveContextAsync } from "@/lib/corpus/retriever";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -41,7 +41,7 @@ export async function POST(
   let retrievedClauses: ReturnType<typeof retrieveContext> = [];
   if (useRag) {
     try {
-      retrievedClauses = retrieveContext(ticket);
+      retrievedClauses = await retrieveContextAsync(ticket);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn(`[triage/followup] corpus retrieval failed (continuing without RAG):`, err);

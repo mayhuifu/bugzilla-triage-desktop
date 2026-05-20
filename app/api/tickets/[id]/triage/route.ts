@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { bridgeFetch, bridgeTriage } from "@/lib/bridge";
 import { buildMockDetail } from "@/lib/mock-data";
-import { retrieveContext } from "@/lib/corpus/retriever";
+import { retrieveContext, retrieveContextAsync } from "@/lib/corpus/retriever";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -53,7 +53,10 @@ export async function POST(
   let retrievedClauses: ReturnType<typeof retrieveContext> = [];
   if (useRag) {
     try {
-      retrievedClauses = retrieveContext(ticket);
+      // Async path activates hybrid RRF when a query embedder is registered
+      // AND its modelId matches the corpus's meta.embeddingModel. Otherwise
+      // it falls back to the same BM25 path as before — no behaviour change.
+      retrievedClauses = await retrieveContextAsync(ticket);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn(`[triage] corpus retrieval failed (continuing without RAG):`, err);

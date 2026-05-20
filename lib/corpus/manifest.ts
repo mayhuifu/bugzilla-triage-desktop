@@ -52,7 +52,11 @@ export interface CorpusManifest {
   };
 }
 
-const SUPPORTED_SCHEMA_VERSION = 1;
+// Corpus v1 ships pure FTS5 BM25. v2 adds sqlite-vec dense vectors +
+// hierarchy in FTS5 + acronyms + eval_queries (corpus repo SPEC.md §14).
+// This client supports both — the retriever degrades gracefully to BM25
+// when reading a v2 corpus on a host with no embedder configured.
+const SUPPORTED_SCHEMA_VERSIONS = new Set([1, 2]);
 
 function localManifestPath(): string {
   return path.join(appDataDir(), "corpus", "manifest.json");
@@ -64,7 +68,7 @@ export async function readLocalManifest(): Promise<CorpusManifest | null> {
   try {
     const raw = await fs.readFile(localManifestPath(), "utf8");
     const parsed = JSON.parse(raw) as CorpusManifest;
-    if (parsed?.schemaVersion !== SUPPORTED_SCHEMA_VERSION) return null;
+    if (!SUPPORTED_SCHEMA_VERSIONS.has(parsed?.schemaVersion)) return null;
     return parsed;
   } catch {
     return null;
@@ -96,8 +100,9 @@ export async function fetchRemoteManifest(url: string, opts: { timeoutMs?: numbe
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`manifest is not valid JSON: ${msg}. First 200 chars: ${text.slice(0, 200)}`);
   }
-  if (parsed?.schemaVersion !== SUPPORTED_SCHEMA_VERSION) {
-    throw new Error(`unsupported manifest schemaVersion=${parsed?.schemaVersion} (this app supports ${SUPPORTED_SCHEMA_VERSION})`);
+  if (!SUPPORTED_SCHEMA_VERSIONS.has(parsed?.schemaVersion)) {
+    const supported = Array.from(SUPPORTED_SCHEMA_VERSIONS).join(", ");
+    throw new Error(`unsupported manifest schemaVersion=${parsed?.schemaVersion} (this app supports {${supported}})`);
   }
   if (!parsed.artifact?.url || !parsed.artifact?.sha256) {
     throw new Error(`manifest is missing required artifact.url / artifact.sha256 fields`);

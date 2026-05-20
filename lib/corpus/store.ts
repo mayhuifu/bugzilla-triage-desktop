@@ -31,6 +31,19 @@ import { appDataDir } from "../settings";
 
 let _db: Database.Database | null = null;
 let _path: string | null = null;
+let _hasVec = false;     // true when sqlite-vec extension successfully loaded
+                         // AND the corpus declares vector tables (schemaVersion>=2).
+
+/** True when the open corpus carries dense vectors and sqlite-vec is loaded
+ *  — i.e. when hybrid retrieval is available. False for v1 corpora and for
+ *  v2-no-vec builds. Caller should treat this as a tri-state with getCorpusDb():
+ *    db == null     → corpus not installed
+ *    db != null + !hasVec → BM25-only path
+ *    db != null +  hasVec → hybrid RRF available
+ */
+export function corpusHasVectors(): boolean {
+  return _db !== null && _hasVec;
+}
 
 /** Where the corpus SQLite lives on disk. Stable across runs of the
  *  same user; never inside the installer bundle. */
@@ -53,9 +66,13 @@ export function getCorpusDb(): Database.Database | null {
   try {
     _db = new Database(p, { readonly: true, fileMustExist: true });
     _path = p;
-    // Reasonable cache size for ~40MB corpus (10MB) — read-only.
+    // Reasonable cache size for the ~40MB v1 corpus and the larger v2.
     _db.pragma("cache_size = -10000");
     _db.pragma("journal_mode = WAL");
+    // Try to load sqlite-vec so vec0 MATCH on `clauses_vec` becomes available.
+    // Missing on a host means hybrid retrieval is unavailable — the retriever
+    // degrades to BM25-only, the rest of the app keeps working.
+    _hasVec = tryLoadSqliteVec(_db) && detectVecTable(_db);
     return _db;
   } catch (err) {
     // Corrupt file, locked, or wrong permissions — surface as no-corpus
@@ -64,7 +81,65 @@ export function getCorpusDb(): Database.Database | null {
     console.warn(`[corpus] failed to open ${p}:`, err);
     _db = null;
     _path = null;
+    _hasVec = false;
     return null;
+  }
+}
+
+/** Best-effort load of the sqlite-vec extension. Returns false (and logs)
+ *  when the package isn't installed or the native binary is missing for
+ *  this platform — the retriever then falls back to BM25-only.
+ *
+ *  Loading strategy: sqlite-vec's official loader calls require.resolve()
+ *  for the .dylib/.so/.dll subpath inside its per-platform sub-package.
+ *  Next.js Webpack can't statically resolve those non-JS subpaths and
+ *  errors out, so we keep that as the first attempt (works in pure-Node
+ *  via tsx/electron) and fall back to a manual path lookup under
+ *  process.cwd()/node_modules that Webpack leaves alone at build time. */
+function tryLoadSqliteVec(db: Database.Database): boolean {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const sqliteVec = (() => {
+    try {
+      return require("sqlite-vec") as { load: (d: Database.Database) => void };
+    } catch {
+      return null;
+    }
+  })();
+  if (sqliteVec) {
+    try { sqliteVec.load(db); return true; } catch { /* fall through */ }
+  }
+  // Manual path resolution. Webpack can't statically analyse a path that
+  // is built up at runtime from process.platform / process.arch, so this
+  // survives bundling.
+  try {
+    const platDir =
+      process.platform === "win32"
+        ? `sqlite-vec-windows-${process.arch}`
+        : `sqlite-vec-${process.platform}-${process.arch}`;
+    const ext =
+      process.platform === "win32" ? "dll" : process.platform === "darwin" ? "dylib" : "so";
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require("node:path") as typeof import("node:path");
+    const candidate = path.join(process.cwd(), "node_modules", platDir, `vec0.${ext}`);
+    db.loadExtension(candidate);
+    return true;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.info(`[corpus] sqlite-vec not loaded (${(err as Error).message}); using BM25-only retrieval`);
+    return false;
+  }
+}
+
+/** Confirm the open corpus actually declares the vector virtual table. v1
+ *  corpora and v2-no-vec corpora don't. */
+function detectVecTable(db: Database.Database): boolean {
+  try {
+    const row = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='clauses_vec'",
+    ).get() as { name: string } | undefined;
+    return !!row;
+  } catch {
+    return false;
   }
 }
 
@@ -76,6 +151,7 @@ export function closeCorpusDb(): void {
   }
   _db = null;
   _path = null;
+  _hasVec = false;
 }
 
 /** Read corpus metadata (version, build date, schema version). Used by

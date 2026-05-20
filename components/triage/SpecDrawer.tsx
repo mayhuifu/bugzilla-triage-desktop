@@ -29,12 +29,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { X, Copy, CheckCircle2, ExternalLink, Loader2, AlertCircle, BookText } from "lucide-react";
 
+interface ClauseTableData {
+  id: string;
+  caption: string;
+  rows: string[][];
+}
+
+interface ClauseFigureData {
+  id: string;
+  caption: string;
+}
+
 interface ClauseResponse {
   clauseId: string;
   citation: string;
   title: string;
   parentTitle?: string;
   text: string;
+  tables?: ClauseTableData[];
+  figures?: ClauseFigureData[];
 }
 
 interface Props {
@@ -186,11 +199,7 @@ export function SpecDrawer({ citation, onClose }: Props) {
             </div>
           )}
 
-          {clause && (
-            <pre className="text-xs text-slate-200 whitespace-pre-wrap font-mono leading-relaxed">
-              {clause.text}
-            </pre>
-          )}
+          {clause && <ClauseBody clause={clause} />}
         </div>
 
         {/* Footer */}
@@ -234,4 +243,179 @@ function specLandingUrl(citation: string): string | null {
   const series = m[1];
   const spec = `${series}.${m[2]}`;
   return `https://www.3gpp.org/ftp/Specs/archive/${series}_series/${spec}/`;
+}
+
+/** Render a clause body. When the v2 corpus's structured `tables` array
+ *  is present, we render it as real HTML <table>s and strip the broken
+ *  pipe-row leftovers from the flattened text. Otherwise (v1 corpus, or
+ *  a clause without structured tables) we fall back to the old
+ *  text-only render with a heuristic pipe-row → table parser. */
+function ClauseBody({ clause }: { clause: ClauseResponse }) {
+  const hasStructuredTables = (clause.tables?.length ?? 0) > 0;
+  if (hasStructuredTables) {
+    const cleaned = stripPipeRows(clause.text);
+    return (
+      <div className="text-xs text-slate-200 leading-relaxed space-y-3">
+        {cleaned && (
+          <pre className="whitespace-pre-wrap font-mono leading-relaxed">
+            {cleaned}
+          </pre>
+        )}
+        {clause.tables!.map((t, i) => (
+          <div key={t.id || i}>
+            {t.caption && (
+              <div className="text-[11px] text-slate-400 font-medium mb-1">
+                {t.caption}
+              </div>
+            )}
+            <ClauseTable rows={t.rows} />
+          </div>
+        ))}
+        {(clause.figures?.length ?? 0) > 0 && (
+          <div className="text-[11px] text-slate-500 italic space-y-0.5 pt-2 border-t border-bg-border/30">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 not-italic mb-0.5">
+              Figures referenced
+            </div>
+            {clause.figures!.map((f, i) => (
+              <div key={f.id || i}>{f.id.split("/").pop()}{f.caption ? `: ${f.caption}` : ""}</div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+  // Fallback: parse pipe-row segments client-side (v1 corpus path).
+  const segments = parseClauseSegments(clause.text);
+  return (
+    <div className="text-xs text-slate-200 leading-relaxed space-y-3">
+      {segments.map((seg, i) =>
+        seg.kind === "table" ? (
+          <ClauseTable key={i} rows={seg.rows} />
+        ) : (
+          <pre
+            key={i}
+            className="whitespace-pre-wrap font-mono leading-relaxed"
+          >
+            {seg.text}
+          </pre>
+        ),
+      )}
+    </div>
+  );
+}
+
+/** Drop lines that look like pipe-separated table cells. Conservative —
+ *  only matches lines whose first non-whitespace character is `|`. Keeps
+ *  prose containing literal pipes (e.g. command examples mid-sentence). */
+function stripPipeRows(text: string): string {
+  return text
+    .split("\n")
+    .filter(ln => !/^\s*\|/.test(ln))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function ClauseTable({ rows }: { rows: string[][] }) {
+  if (rows.length === 0) return null;
+  // Treat the first row as the header when it has at least 2 cells and
+  // any cell contains a non-numeric token (typical of header labels);
+  // otherwise render all rows as <tbody>.
+  const firstLooksLikeHeader =
+    rows[0].length >= 2 &&
+    rows[0].some(c => /[A-Za-z]{2,}/.test(c));
+  const head = firstLooksLikeHeader ? rows[0] : null;
+  const body = firstLooksLikeHeader ? rows.slice(1) : rows;
+  return (
+    <div className="overflow-x-auto border border-bg-border rounded">
+      <table className="text-[11px] w-full">
+        {head && (
+          <thead className="bg-bg-card/60">
+            <tr>
+              {head.map((c, j) => (
+                <th
+                  key={j}
+                  className="px-2 py-1 text-left font-semibold text-slate-200 border-b border-bg-border whitespace-nowrap"
+                >
+                  {c}
+                </th>
+              ))}
+            </tr>
+          </thead>
+        )}
+        <tbody>
+          {body.map((row, i) => (
+            <tr key={i} className="even:bg-bg-card/30">
+              {row.map((c, j) => (
+                <td
+                  key={j}
+                  className="px-2 py-1 text-slate-300 border-b border-bg-border/40 align-top"
+                >
+                  {c}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+type Segment =
+  | { kind: "text"; text: string }
+  | { kind: "table"; rows: string[][] };
+
+/** Walk the flattened clause text line by line. A run of consecutive
+ *  lines that look like table rows (start with `|`, contain ≥ 2 cells)
+ *  gets collapsed into a single `table` segment. Everything else is
+ *  preserved verbatim as `text` (paragraphs, list bullets, etc.). */
+function parseClauseSegments(text: string): Segment[] {
+  const out: Segment[] = [];
+  const lines = text.split("\n");
+  let textBuf: string[] = [];
+  let tableBuf: string[][] = [];
+
+  const flushText = () => {
+    if (textBuf.length === 0) return;
+    out.push({ kind: "text", text: textBuf.join("\n") });
+    textBuf = [];
+  };
+  const flushTable = () => {
+    if (tableBuf.length === 0) return;
+    out.push({ kind: "table", rows: tableBuf });
+    tableBuf = [];
+  };
+
+  for (const raw of lines) {
+    const cells = tryParseTableRow(raw);
+    if (cells) {
+      flushText();
+      tableBuf.push(cells);
+    } else {
+      flushTable();
+      textBuf.push(raw);
+    }
+  }
+  flushText();
+  flushTable();
+  return out;
+}
+
+/** A table row in the parser's flattened format looks like:
+ *    "| cell1 | cell2 | cell3"
+ *  (leading whitespace optional, trailing pipe optional). We require at
+ *  least two cells to avoid false positives on prose containing a single
+ *  literal pipe (e.g. command-line examples). */
+function tryParseTableRow(line: string): string[] | null {
+  // Quick reject: must contain at least 2 pipes after the leading edge.
+  if ((line.match(/\|/g) || []).length < 2) return null;
+  // Strip leading whitespace + the opening pipe.
+  const trimmed = line.replace(/^\s*\|\s?/, "");
+  if (trimmed === line) return null;       // no leading pipe → not a row
+  const parts = trimmed.split(/\s*\|\s*/).map(s => s.trim());
+  // Drop a trailing empty cell from `... | row | ` artefacts.
+  while (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
+  if (parts.length < 2) return null;
+  return parts;
 }

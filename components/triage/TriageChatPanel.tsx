@@ -397,13 +397,17 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
                   // SpecDrawer. When the corpus isn't installed or the
                   // citation isn't in it, the button is hidden.
                   const hasCorpus = !!excerpt?.clauseId;
-                  // Pre-fill the editable textarea from realText (corpus)
-                  // when present, falling back to the model's summary.
-                  // This lets the user refine the corpus text inline
-                  // before submission, while the drawer always shows
-                  // the original full clause.
+                  // Always bind the main-view textarea to `summary` — a
+                  // short paraphrase that's either model-supplied or
+                  // auto-condensed from the corpus realText server-side
+                  // (see enrichExcerptsWithCorpus in lib/llm.ts). The
+                  // full clause text stays accessible via the "View
+                  // clause" drawer; keeping it out of the main view
+                  // prevents the triage panel from being dominated by
+                  // multi-paragraph spec excerpts. Defensive fallback
+                  // to realText only if summary somehow ended up empty.
                   const editableText = excerpt
-                    ? (excerpt.realText || excerpt.summary)
+                    ? (excerpt.summary || excerpt.realText || "")
                     : "";
                   const sourceTag = excerpt?.source === "corpus" || excerpt?.source === "corpus+model"
                     ? "[corpus]"
@@ -459,16 +463,16 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
                           value={editableText}
                           onChange={v => {
                             const next = [...t.specExcerpts];
-                            // Editing the textarea overwrites whichever
-                            // field is currently authoritative — keep
-                            // both fields in sync so submission picks up
-                            // the user's intent regardless of which
-                            // header-builder branch fires.
-                            const field = excerpt.realText ? "realText" : "summary";
-                            next[excerptIdx] = { ...excerpt, [field]: v };
+                            // The main-view edit always targets the short
+                            // `summary` — realText is the canonical full
+                            // corpus text and is preserved as-is for the
+                            // drawer. pickHeaderBody (lib/llm.ts) prefers
+                            // summary, so the user's edits flow through
+                            // to the Bugzilla comment.
+                            next[excerptIdx] = { ...excerpt, summary: v };
                             updateTriage({ specExcerpts: next });
                           }}
-                          rows={hasCorpus ? 4 : 2}
+                          rows={2}
                           className="text-[11px] text-slate-400 leading-snug"
                         />
                       ) : (

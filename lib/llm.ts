@@ -592,20 +592,22 @@ function renderClassificationHeader(t: TriageResult): string {
 }
 
 /** Pick the best short text to render under a clause in the CLASSIFICATION
- *  header. Order of preference:
- *    1. First sentence-or-two (~280 chars) of `realText` from the corpus
- *    2. The model's `summary` paraphrase
+ *  header. Since v0.1.10, `summary` is the authoritative short form —
+ *  either model-supplied, user-edited in the UI, or auto-condensed from
+ *  realText by enrichExcerptsWithCorpus. Order of preference:
+ *    1. The (possibly user-edited) `summary`
+ *    2. Condensed `realText` as a defensive fallback if summary is empty
  *    3. Empty (just print the bare clause line)
- *  Annotated with a "[corpus]" / "[ai paraphrase]" tag so the debugger
- *  knows which they're looking at. */
+ *  Tagged with "[corpus]" or "[ai paraphrase]" to keep the debugger
+ *  honest about which kind of text is in the comment. */
 function pickHeaderBody(e: SpecExcerpt): string | null {
-  const real = (e.realText || "").trim();
-  if (real) {
-    const condensed = condenseForHeader(real);
-    return `[corpus] ${condensed}`;
-  }
   const summary = (e.summary || "").trim();
-  if (summary) return `[ai paraphrase] ${summary}`;
+  const corpusSource = e.source === "corpus" || e.source === "corpus+model";
+  if (summary) {
+    return `${corpusSource ? "[corpus]" : "[ai paraphrase]"} ${summary}`;
+  }
+  const real = (e.realText || "").trim();
+  if (real) return `[corpus] ${condenseForHeader(real)}`;
   return null;
 }
 
@@ -657,9 +659,15 @@ function enrichExcerptsWithCorpus(t: TriageResult): TriageResult {
       continue;
     }
     const existing = byClause.get(clause);
+    // Auto-condense the full corpus text into a short `summary` when the
+    // model didn't supply one. The UI binds the editable textarea in the
+    // Initial Classification bubble to `summary` — so this guarantees the
+    // user always sees a short, editable preview, and the full clause
+    // text stays accessible via the SpecDrawer's "View clause" button.
+    const summary = (existing?.summary || "").trim() || condenseForHeader(hit.text);
     const merged: SpecExcerpt = {
       clause,
-      summary: existing?.summary || "",
+      summary,
       clauseId: hit.clauseId,
       title: hit.title,
       parentTitle: hit.parentTitle,
