@@ -30,79 +30,106 @@ export const maxDuration = 600;
 // for the download to finish to write this — the downloader updates it
 // on the way to "ready" status via writeLocalManifest().
 export async function POST(req: Request) {
-  const progress = getDownloadProgress();
-  const inFlight =
-    progress.status === "downloading" ||
-    progress.status === "verifying" ||
-    progress.status === "decompressing" ||
-    progress.status === "installing";
-  if (inFlight) {
-    return NextResponse.json(
-      { error: "a corpus download is already in progress", progress },
-      { status: 409 },
-    );
-  }
-
-  let body: { manifestUrl?: string };
+  // Top-level try/catch so ANY unexpected failure (settings read,
+  // appData mkdir, manifest URL validation, etc.) gets surfaced to the
+  // UI as a readable error string instead of Next.js's opaque default
+  // 500 page. Without this wrapper, a packaged-Electron crash in any
+  // upstream call would show "HTTP 500" with no diagnostic info on
+  // the user's machine.
   try {
-    body = await req.json().catch(() => ({}));
-  } catch {
-    body = {};
-  }
+    const progress = getDownloadProgress();
+    const inFlight =
+      progress.status === "downloading" ||
+      progress.status === "verifying" ||
+      progress.status === "decompressing" ||
+      progress.status === "installing";
+    if (inFlight) {
+      return NextResponse.json(
+        { error: "a corpus download is already in progress", progress },
+        { status: 409 },
+      );
+    }
 
-  const settings = loadSettings();
-  const manifestUrl = body.manifestUrl?.trim() || settings.corpusManifestUrl;
-  if (!manifestUrl) {
-    return NextResponse.json(
-      { error: "no manifest URL configured (open Settings → Spec corpus → Manifest URL)" },
-      { status: 400 },
-    );
-  }
+    let body: { manifestUrl?: string };
+    try {
+      body = await req.json().catch(() => ({}));
+    } catch {
+      body = {};
+    }
 
-  // Step 1: fetch the manifest (synchronous wrt the HTTP response so the
-  // user sees clear errors here rather than a confusing "download failed"
-  // halfway through).
-  let manifest;
-  try {
-    manifest = await fetchRemoteManifest(manifestUrl);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json(
-      { error: `failed to fetch manifest from ${manifestUrl}: ${msg}` },
-      { status: 502 },
-    );
-  }
+    const settings = loadSettings();
+    const manifestUrl = body.manifestUrl?.trim() || settings.corpusManifestUrl;
+    if (!manifestUrl) {
+      return NextResponse.json(
+        { error: "no manifest URL configured (open Settings → Spec corpus → Manifest URL)" },
+        { status: 400 },
+      );
+    }
 
-  // Step 2: start the download — but DON'T await it. We respond 202
-  // with the initial progress; the long-running streaming happens after
-  // the HTTP response is sent and is observable via /api/corpus/status.
-  // `void` makes the floating-promise lint happy.
-  void downloadCorpus(manifest).then(
-    () => {
-      // Persist the installed version so the next process boot knows.
-      const fresh = loadSettings();
-      saveSettings({ ...fresh, corpusVersion: manifest.tag });
-    },
-    err => {
-      // Errors are already captured in the downloader's progress state —
-      // log here for server-side debugging.
+    // Step 1: fetch the manifest (synchronous wrt the HTTP response so the
+    // user sees clear errors here rather than a confusing "download failed"
+    // halfway through).
+    let manifest;
+    try {
+      manifest = await fetchRemoteManifest(manifestUrl);
+    } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // eslint-disable-next-line no-console
-      console.warn(`[corpus] background download failed: ${msg}`);
-    },
-  );
+      return NextResponse.json(
+        { error: `failed to fetch manifest from ${manifestUrl}: ${msg}` },
+        { status: 502 },
+      );
+    }
 
-  return NextResponse.json(
-    {
-      started: true,
-      manifest: {
-        tag: manifest.tag,
-        release: manifest.release,
-        sizeBytesGzipped: manifest.artifact.sizeBytesGzipped,
-        sizeBytesUncompressed: manifest.artifact.sizeBytesUncompressed,
+    // Step 2: start the download — but DON'T await it. We respond 202
+    // with the initial progress; the long-running streaming happens after
+    // the HTTP response is sent and is observable via /api/corpus/status.
+    // `void` makes the floating-promise lint happy.
+    void downloadCorpus(manifest).then(
+      () => {
+        // Persist the installed version so the next process boot knows.
+        try {
+          const fresh = loadSettings();
+          saveSettings({ ...fresh, corpusVersion: manifest!.tag });
+        } catch (err) {
+          // Don't let a settings-write failure mask a successful install —
+          // the manifest sidecar already records the version.
+          // eslint-disable-next-line no-console
+          console.warn(`[corpus] post-download saveSettings failed:`, err);
+        }
       },
-      progress: getDownloadProgress(),
-    },
-    { status: 202 },
-  );
+      err => {
+        // Errors are already captured in the downloader's progress state —
+        // log here for server-side debugging.
+        const msg = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.warn(`[corpus] background download failed: ${msg}`);
+      },
+    );
+
+    return NextResponse.json(
+      {
+        started: true,
+        manifest: {
+          tag: manifest.tag,
+          release: manifest.release,
+          sizeBytesGzipped: manifest.artifact.sizeBytesGzipped,
+          sizeBytesUncompressed: manifest.artifact.sizeBytesUncompressed,
+        },
+        progress: getDownloadProgress(),
+      },
+      { status: 202 },
+    );
+  } catch (err) {
+    // Anything we didn't anticipate — surface name + message so the
+    // banner UI can show something more useful than "HTTP 500".
+    const e = err as Error & { code?: string };
+    // eslint-disable-next-line no-console
+    console.error(`[corpus] /api/corpus/download unexpected error:`, err);
+    return NextResponse.json(
+      {
+        error: `download init failed: ${e?.name ?? "Error"}: ${e?.message ?? String(err)}${e?.code ? ` [${e.code}]` : ""}`,
+      },
+      { status: 500 },
+    );
+  }
 }

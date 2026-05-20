@@ -12,6 +12,27 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.15 — Surface the real corpus-download error instead of an opaque HTTP 500
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **POST /api/corpus/download now returns a readable error message on any unexpected failure.** v0.1.14's banner UI showed `HTTP 500` when the download route threw an unhandled exception (settings read, manifest validation, fs operations, …), giving the user nothing to act on. This release wraps the entire handler in a top-level try/catch and returns `{ error: "download init failed: <name>: <message> [<code>]" }` so the banner can display the actual reason.
+- The corpus itself is reachable — `rel17-v1` manifest + artifact return 200 OK from GitHub Releases. Whatever was throwing on the user's Windows machine is now visible.
+
+### Changes
+
+- `app/api/corpus/download/route.ts` — wrapped the POST handler in a top-level try/catch that captures Error name + message + code (when present) and returns it as JSON. Also defensively wrapped the post-download `saveSettings()` call so a settings-write failure can't mask a successful corpus install (the manifest sidecar already records the version).
+
+### Upgrade notes
+
+- Purely diagnostic. If the download was already working for you, nothing changes.
+- When upgrading from v0.1.14 with a previously-failed download: clear `localStorage["corpusBannerDismissed"]` in the Electron DevTools console if you want the banner to re-show (or just open Settings → Spec corpus → Download).
+
+---
+
 ## v0.1.14 — First-launch banner to install the optional 3GPP corpus
 
 **Tagged:** —
