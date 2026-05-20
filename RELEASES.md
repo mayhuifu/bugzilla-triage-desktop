@@ -12,6 +12,29 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.16 — Default corpus URL now points at rel17-v2 (with auto-upgrade for legacy installs)
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **rel17-v2 is now the default corpus.** The companion repo [bugzilla-triage-corpus](https://github.com/mayhuifu/bugzilla-triage-corpus) just published [rel17-v2](https://github.com/mayhuifu/bugzilla-triage-corpus/releases/tag/rel17-v2) — 5,667 leaf clauses + 9,920 structured tables + 1,092 figure refs + sqlite-vec dense vectors (bge-m3), schemaVersion=2 in the SQLite. The desktop's default manifest URL now points there, so first-launch installs of v0.1.16 will offer this corpus.
+- **Existing installs auto-upgrade silently.** If a returning user's `settings.json` still has the previously-shipped rel17-v1 default URL (i.e. they accepted the default and never edited it), `loadSettings()` rewrites it to the rel17-v2 default on next launch. Users who customised the URL to a SharePoint mirror or other internal source are untouched.
+
+### Changes
+
+- `lib/settings.ts` — `DEFAULT_CORPUS_MANIFEST_URL` switched to `…/rel17-v2/…`. New `LEGACY_DEFAULT_CORPUS_MANIFEST_URLS` set lists previously-shipped defaults; if `loadSettings()` finds an exact match in there, it rewrites the value before returning. Migration is in-memory only — `saveSettings()` next persists the new URL.
+- `components/settings/CorpusSection.tsx` — corpus-status blurb updated from "5,631 clauses · ~40 MB" to reflect v2's "5,667 leaf clauses + 9,920 tables · ~80 MB, ~26 MB compressed download".
+
+### Upgrade notes
+
+- New `.exe` / `.dmg` / `.AppImage` installs: corpus banner offers rel17-v2 (~26 MB gzipped).
+- Existing installs with the rel17-v1 default still saved: the URL rewrites silently, but the *installed* corpus is still v1 until you re-download — open Settings → Spec corpus → click **Check for updates** (or use the banner if it reappears) → install v2.
+- Installs with a customised manifest URL (internal mirror): no change. To opt into v2 manually, edit the Manifest URL field in Settings to the rel17-v2 manifest URL on your mirror.
+
+---
+
 ## v0.1.15 — Surface the real corpus-download error instead of an opaque HTTP 500
 
 **Tagged:** —

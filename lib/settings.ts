@@ -96,13 +96,23 @@ interface StoredEnvelope {
   settings: Settings;
 }
 
-/** Default corpus manifest URL — the published rel17-v1 manifest on
+/** Default corpus manifest URL — the published rel17-v2 manifest on
  *  github.com/mayhuifu/bugzilla-triage-corpus. Users in regions where
  *  GitHub is blocked (e.g. mainland China) override this in Settings to
  *  point at an internal mirror (SharePoint / Confluence / S3) hosting
  *  the same manifest+sqlite.gz pair. */
 const DEFAULT_CORPUS_MANIFEST_URL =
-  "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v1/3gpp-corpus-rel17-v1-2026-05.manifest.json";
+  "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v2/3gpp-corpus-rel17-v2-2026-05.manifest.json";
+
+/** Legacy default URLs we've shipped. When a user's saved settings.json
+ *  still has one of these (i.e. they accepted the default at install
+ *  time and never edited it), we silently upgrade to the current default
+ *  on load. Users who DID customise the URL (e.g. internal mirror) keep
+ *  their value — we only rewrite if it's an exact match for a previous
+ *  shipped default. */
+const LEGACY_DEFAULT_CORPUS_MANIFEST_URLS = new Set([
+  "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v1/3gpp-corpus-rel17-v1-2026-05.manifest.json",
+]);
 
 const EMPTY_SETTINGS: Settings = {
   bugzillaUrl: "",
@@ -208,6 +218,16 @@ export function loadSettings(): Settings {
   // (e.g. llmProvider, llmBaseUrl) get safe defaults when reading an older
   // settings.json that pre-dates them — no schema migration needed.
   _cache = { ...EMPTY_SETTINGS, ...env, ...fromFile };
+
+  // One-shot migration: upgrade a still-default-from-an-older-release
+  // corpus manifest URL to the current default. If the user kept the
+  // shipped URL (which is almost everyone), they get the new corpus
+  // release silently. If they customised to an internal mirror, the
+  // URL is untouched.
+  if (LEGACY_DEFAULT_CORPUS_MANIFEST_URLS.has(_cache.corpusManifestUrl)) {
+    _cache = { ..._cache, corpusManifestUrl: DEFAULT_CORPUS_MANIFEST_URL };
+  }
+
   return _cache;
 }
 
