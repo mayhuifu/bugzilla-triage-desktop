@@ -39,6 +39,10 @@ type ProgressStatus = "idle" | "downloading" | "verifying" | "decompressing" | "
 
 interface CorpusStatus {
   installed: boolean;
+  /** Non-null when the corpus file is on disk but better-sqlite3 can't
+   *  load the native binary (typically missing VC++ runtime on Windows).
+   *  Distinct from "not installed". */
+  engineError: string | null;
   version: string | null;
   totalClauses: number;
   sizeBytesGzipped: number | null;
@@ -131,13 +135,49 @@ export function CorpusInstallBanner() {
     setDismissed(true);
   }, []);
 
-  // Hide entirely once installed, regardless of dismiss state — the
-  // banner has done its job. (Settings page still shows the version /
-  // update controls.)
-  if (status?.installed) return null;
   // Hide before we've heard from the server — avoids flashing the
   // banner on every page load.
   if (!status) return null;
+
+  // Distinct "installed but unusable" state — corpus file is on disk
+  // but the native sqlite engine can't load it. Most common cause on
+  // Windows: missing VC++ Redistributable. Show a persistent (non-
+  // dismissible) banner because triage retrieval won't work until the
+  // engine is fixed.
+  if (status.installed && status.engineError) {
+    return (
+      <div className="card border-amber-500/30 bg-amber-950/20 px-4 py-3 mb-4 flex items-start gap-3 animate-fade-in">
+        <AlertCircle className="w-5 h-5 text-amber-300 shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <div className="text-xs text-slate-100 font-medium">
+            3GPP corpus downloaded, but the native database engine failed to load
+          </div>
+          <div className="text-[11px] text-slate-400 mt-1 leading-snug break-words">
+            AI triage will fall back to model paraphrase. The corpus file is on disk and will be used the moment the engine loads.
+          </div>
+          <div className="text-[11px] text-slate-500 mt-1.5 font-mono break-all">
+            {status.engineError}
+          </div>
+          <div className="text-[11px] text-slate-400 mt-2 leading-snug">
+            <span className="text-slate-300 font-medium">Most likely fix on Windows:</span> install the latest{" "}
+            <a
+              href="https://aka.ms/vs/17/release/vc_redist.x64.exe"
+              target="_blank"
+              rel="noreferrer noopener"
+              className="text-accent-glow hover:underline"
+            >
+              Visual C++ Redistributable (x64)
+            </a>
+            , then restart the app. If that doesn&apos;t work, check Windows Defender hasn&apos;t quarantined{" "}
+            <span className="font-mono text-[10px]">better_sqlite3.node</span> under the install directory.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Hide once installed and engine is happy — banner has done its job.
+  if (status.installed) return null;
   // Respect the user's dismissal unless a download is currently
   // running (in which case the user should see progress).
   const phase = status.progress.status;

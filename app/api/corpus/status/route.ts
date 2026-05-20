@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { readLocalManifest, fetchRemoteManifest, isRemoteNewer, type CorpusManifest } from "@/lib/corpus/manifest";
 import { getDownloadProgress } from "@/lib/corpus/downloader";
-import { getCorpusMeta } from "@/lib/corpus/store";
+import { getCorpusMeta, corpusEngineError } from "@/lib/corpus/store";
 import { loadSettings } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
@@ -21,12 +21,27 @@ export async function GET(req: Request) {
 
   const localManifest = await readLocalManifest();
   const meta = getCorpusMeta();
+  const engineError = corpusEngineError();
   const progress = getDownloadProgress();
   const settings = loadSettings();
 
-  const installed = !!localManifest && !!meta;
+  // `installed` now reflects whether the manifest is on disk — i.e. whether
+  // a download has completed. Previously we ANDed this with `!!meta`, which
+  // meant "installed" silently flipped to false when the native sqlite
+  // engine failed to load on a Windows machine — the user saw the
+  // download succeed, then watched the Settings card revert to the
+  // download CTA with no explanation. The new shape separates the two:
+  //
+  //   installed:   true  → corpus file is on disk
+  //   engineError: null  → native sqlite engine loaded OK; retrieval works
+  //   engineError: "..."  → file is there but better-sqlite3 couldn't load
+  //                         (usually missing VC++ runtime on Windows). UI
+  //                         should surface this so the user has something
+  //                         to act on instead of a mysterious blank state.
+  const installed = !!localManifest;
   const base = {
     installed,
+    engineError,
     version: localManifest?.tag ?? null,
     builtAt: localManifest?.builtAt ?? null,
     sizeBytesUncompressed: localManifest?.artifact.sizeBytesUncompressed ?? null,

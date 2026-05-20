@@ -12,6 +12,32 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.18 — Surface "installed but engine broken" state + Windows VC++ recovery hint
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **The Settings card and the AI Triage RAG toggle now correctly recognise a downloaded corpus** even when `better-sqlite3` fails to open it. v0.1.17 lazy-required the native binary so the download path stayed alive, but `/api/corpus/status` was still gating `installed` on the database opening successfully — so after the download finished, the UI silently reverted to the "Download corpus" state and the RAG toggle disappeared. This release decouples the two states.
+- **Banner replaces the "Download" CTA with a clear, persistent diagnostic** when the corpus file is on disk but the engine can't load it. Shows the underlying error verbatim plus a one-click link to the Microsoft VC++ Redistributable installer (the fix in 95%+ of Windows cases).
+
+### Why the engine fails on some Windows installs
+
+`better-sqlite3` is a native Node addon — a `.node` file that depends on the Visual C++ runtime DLLs (`vcruntime140.dll` etc.). Fresh / minimal / disk-image-restored Windows installs often don't have those system DLLs, and `LoadLibrary` fails with errors like "The specified module could not be found." Installing the [Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) from Microsoft and restarting the app fixes it. Antivirus quarantining the `.node` file is the second-most-common cause.
+
+### Changes
+
+- `app/api/corpus/status/route.ts` — `installed` now reflects manifest presence only, not whether the engine successfully opened the DB. New `engineError: string | null` field exposes the underlying `better-sqlite3` load failure (sourced from v0.1.17's `corpusEngineError()`).
+- `components/corpus/CorpusInstallBanner.tsx` — new "installed but engine broken" rendering branch with the actual error text, a link to the VC++ Redistributable installer, and a hint about Defender quarantine. Non-dismissible because triage retrieval can't work until the engine loads.
+
+### Upgrade notes
+
+- Purely additive. No settings or data migration.
+- If your previous install of v0.1.17 showed an HTTP 500 then completed the download silently with no installed state: install v0.1.18 over it. The banner will now show the actual engine error and the fix link. Most users will: install the VC++ Redistributable, restart the app, see the corpus install as expected.
+
+---
+
 ## v0.1.17 — Lazy-require better-sqlite3 so corpus download survives a broken native binary
 
 **Tagged:** —
