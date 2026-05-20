@@ -103,8 +103,22 @@ export function CorpusInstallBanner() {
         body: "{}",   // server falls back to settings.corpusManifestUrl
       });
       if (!r.ok) {
-        const body = (await r.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error || `HTTP ${r.status}`);
+        // Read the body as text first so we can surface diagnostic info
+        // even when the response isn't JSON (e.g. Next.js's default 500
+        // HTML page when a top-level import in the route module crashes
+        // before our try/catch wrapper runs). Falls back to "HTTP N" only
+        // when there's nothing useful to show.
+        const text = await r.text().catch(() => "");
+        let detail = `HTTP ${r.status}`;
+        if (text) {
+          try {
+            const body = JSON.parse(text) as { error?: string };
+            detail = body.error || `HTTP ${r.status}: ${text.slice(0, 300)}`;
+          } catch {
+            detail = `HTTP ${r.status}: ${text.slice(0, 300)}`;
+          }
+        }
+        throw new Error(detail);
       }
       // Poll loop above will pick up progress and re-render.
     } catch (err) {

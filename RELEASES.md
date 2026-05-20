@@ -12,6 +12,34 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.17 — Lazy-require better-sqlite3 so corpus download survives a broken native binary
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **The corpus-download endpoint no longer crashes when `better-sqlite3` can't load.** v0.1.10–v0.1.16's `lib/corpus/store.ts` had `import Database from "better-sqlite3"` as a top-level ES import. On a Windows install where the native `.node` binary fails to load — wrong arch prebuild, missing VC++ runtime DLL, AV quarantine, etc. — that top-level import throws **before any route handler in the corpus chain can run**. Next.js then returns an opaque 500 with no body (route module failed to load), and even v0.1.15's try/catch wrapper inside `POST /api/corpus/download` never gets a chance to catch it. The banner shows the literal `HTTP 500`.
+- **Lazy-require fixes that:** `better-sqlite3` is now `require()`'d inside `getCorpusDb()` the first time the database is opened. If the native binary fails, `getCorpusDb()` records the error and returns `null` — exactly the same shape as "corpus not installed yet". Routes that don't need the DB (download, manifest fetch) keep working. Routes that do (lookup, retrieveContext) silently no-op and the triage UI falls back to model paraphrase.
+- **Banner now surfaces response body text** even when the response isn't JSON. So if Next.js's default 500 HTML page is what comes back, the banner shows the first 300 chars of it instead of the bare status code — usable as diagnostic.
+- **New `corpusEngineError()` helper** that `lib/corpus/store.ts` exposes for downstream UI surfacing of "native sqlite engine unavailable" as a distinct state from "corpus file missing".
+
+### Why this matters now
+
+The user reported HTTP 500 from the corpus download on a fresh Windows install of v0.1.14/15/16. The diagnostic wrapper from v0.1.15 didn't help — strongly suggesting the failure is at module-load, before the wrapper runs. v0.1.17 turns that failure mode into "download succeeds; retrieval gracefully degrades to model-only triage", which is a much better degradation curve than "feature completely unusable."
+
+### Changes
+
+- `lib/corpus/store.ts` — top-level `import Database from "better-sqlite3"` replaced with a `type`-only import + lazy `require` inside `loadBetterSqlite3()`. New `corpusEngineError()` exported. `getCorpusDb()` returns `null` when the engine couldn't be loaded.
+- `components/corpus/CorpusInstallBanner.tsx` — error handler now reads response body as text, attempts JSON parse, falls back to first 300 chars of the raw body. The literal `HTTP 500` only appears when the response body is genuinely empty.
+
+### Upgrade notes
+
+- Purely defensive. If `better-sqlite3` loaded fine on your machine before, nothing changes — the lazy require resolves the same constructor and the DB opens the same way.
+- If you were seeing `HTTP 500` before, reinstall v0.1.17. Either the download will now succeed (revealing whether better-sqlite3 was the underlying problem), or the banner will print a longer error message that tells us where to look next.
+
+---
+
 ## v0.1.16 — Default corpus URL now points at rel17-v2 (with auto-upgrade for legacy installs)
 
 **Tagged:** —

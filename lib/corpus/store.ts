@@ -25,14 +25,57 @@
 import "server-only";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 
 import { appDataDir } from "../settings";
 
+// better-sqlite3 is required lazily (see loadBetterSqlite3 below) rather
+// than as a top-level import. The native .node binary can fail to load
+// on a packaged Windows install — wrong arch prebuild, missing C runtime
+// DLL, AV quarantine, etc. — and a top-level import would crash the
+// module ENTIRE-WIDE, taking down every route handler that imports
+// anything from this file, including /api/corpus/download which doesn't
+// even need the database. Lazy require keeps the download path working
+// even when retrieval is broken: the user can still install a fresh
+// corpus and hopefully the new file loads.
+//
+// `type Database from "better-sqlite3"` is a TYPE-only import — TS
+// strips it at compile time so no runtime require fires.
 let _db: Database.Database | null = null;
 let _path: string | null = null;
 let _hasVec = false;     // true when sqlite-vec extension successfully loaded
                          // AND the corpus declares vector tables (schemaVersion>=2).
+let _bs3LoadErr: string | null = null;  // last better-sqlite3 load error, if any
+let _bs3: typeof Database | null = null;
+
+/** Lazy-loader for better-sqlite3 so a missing/broken native binary
+ *  doesn't crash module-load. First call resolves the constructor; on
+ *  failure it records the error and every subsequent call returns null
+ *  cheaply — getCorpusDb() then treats the corpus as "unopenable" and
+ *  the rest of the app degrades gracefully. */
+function loadBetterSqlite3(): typeof Database | null {
+  if (_bs3) return _bs3;
+  if (_bs3LoadErr) return null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    _bs3 = require("better-sqlite3") as typeof Database;
+    return _bs3;
+  } catch (err) {
+    _bs3LoadErr = (err as Error)?.message || String(err);
+    // eslint-disable-next-line no-console
+    console.error(`[corpus] better-sqlite3 require failed: ${_bs3LoadErr}`);
+    return null;
+  }
+}
+
+/** Diagnostic: tells callers whether the native sqlite binary is
+ *  available at all. /api/corpus/status uses this to report
+ *  "corpus engine unavailable" instead of a misleading "not installed". */
+export function corpusEngineError(): string | null {
+  if (_bs3) return null;
+  loadBetterSqlite3();
+  return _bs3LoadErr;
+}
 
 /** True when the open corpus carries dense vectors and sqlite-vec is loaded
  *  — i.e. when hybrid retrieval is available. False for v1 corpora and for
@@ -63,8 +106,15 @@ export function getCorpusDb(): Database.Database | null {
     if (_db) closeCorpusDb();
     return null;
   }
+  const Bs3 = loadBetterSqlite3();
+  if (!Bs3) {
+    // Native binary unavailable — the rest of the app continues without
+    // corpus retrieval. Caller treats null exactly like "corpus not
+    // installed" and falls back to the model's training-data paraphrase.
+    return null;
+  }
   try {
-    _db = new Database(p, { readonly: true, fileMustExist: true });
+    _db = new Bs3(p, { readonly: true, fileMustExist: true });
     _path = p;
     // Reasonable cache size for the ~40MB v1 corpus and the larger v2.
     _db.pragma("cache_size = -10000");
