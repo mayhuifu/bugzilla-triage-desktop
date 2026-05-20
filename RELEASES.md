@@ -12,6 +12,26 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.19 — Surface "engine unavailable" warning inside the triage panel
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **Engine-broken diagnostic now appears next to the "Use 3GPP Spec RAG" toggle** when the user enables RAG inside the triage panel. Previously v0.1.18 surfaced this state only on the home-page banner — users who jumped straight from the queue to a ticket and ran triage saw the RAG toggle, enabled it, and watched every citation come back as `[ai paraphrase]` with no "View clause" button, no idea why. The toggle stays visible (the corpus file IS installed) but a small amber notice underneath explains "Corpus engine unavailable — RAG queries will return no results" plus a link to the VC++ Redistributable.
+
+### Changes
+
+- `components/triage/TriageChatPanel.tsx` — fetches and tracks `engineError` from `/api/corpus/status` alongside `installed`. When RAG is enabled AND engineError is set, renders a compact inline warning under the toggle with the same VC++ Redistributable download link as the home-page banner.
+
+### Upgrade notes
+
+- Purely UI / diagnostic. If your `better-sqlite3` is loading fine, you'll never see this warning.
+- If you're hitting "RAG enabled but only `[ai paraphrase]` citations": that's the engine-broken state. Install Visual C++ Redistributable (x64) from Microsoft and restart the app.
+
+---
+
 ## v0.1.18 — Surface "installed but engine broken" state + Windows VC++ recovery hint
 
 **Tagged:** —

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Sparkles, Send, Loader2, ShieldCheck, Lock, AlertTriangle, RefreshCw,
   ListChecks, Lightbulb, MessageCircleQuestion, AlertOctagon, FileText,
-  Pencil, BookText,
+  Pencil, BookText, AlertCircle,
 } from "lucide-react";
 import type { TriageResult, TicketStatus, SubmissionReceipt } from "@/lib/types";
 import { ConfidenceBadge } from "@/components/ui/Badge";
@@ -103,11 +103,17 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
   // The corpus card in Settings drives the visibility of the toggle;
   // null = unknown / still polling. Hide the toggle entirely when the
   // corpus isn't installed so it doesn't suggest a non-functional
-  // affordance.
+  // affordance. engineError separates "file on disk but native sqlite
+  // can't open it" (typically missing VC++ runtime on Windows) — the
+  // toggle stays visible in that state but a warning surfaces inline,
+  // so users running triage from a ticket page don't miss the
+  // diagnostic that home-page banner would otherwise show.
   const [corpusInstalled, setCorpusInstalled] = useState<boolean | null>(null);
+  const [corpusEngineError, setCorpusEngineError] = useState<string | null>(null);
   useEffect(() => {
     fetch("/api/corpus/status").then(r => r.json()).then(d => {
       setCorpusInstalled(Boolean(d?.installed));
+      setCorpusEngineError(d?.engineError ?? null);
     }).catch(() => setCorpusInstalled(false));
   }, []);
 
@@ -939,21 +945,50 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
                 tickets where the model would benefit from real spec
                 citations. Choice persists via localStorage. */}
             {corpusInstalled && (
-              <label
-                className="mt-1 flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer select-none px-2.5 py-1 rounded-md bg-bg-panel/40 border border-bg-border/40 hover:bg-bg-panel/60"
-                title="When on, the AI receives candidate clauses from the local 3GPP Rel-17 corpus AND its specReferences are looked up in the corpus after triage. Leave off for non-cellular tickets."
-              >
-                <input
-                  type="checkbox"
-                  checked={useRag}
-                  onChange={e => persistUseRag(e.target.checked)}
-                  className="w-3.5 h-3.5 accent-accent"
-                />
-                <BookText className={`w-3.5 h-3.5 ${useRag ? "text-accent" : "text-slate-500"}`} />
-                <span>
-                  Use <span className="text-slate-200">3GPP Spec RAG</span>
-                </span>
-              </label>
+              <>
+                <label
+                  className="mt-1 flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer select-none px-2.5 py-1 rounded-md bg-bg-panel/40 border border-bg-border/40 hover:bg-bg-panel/60"
+                  title="When on, the AI receives candidate clauses from the local 3GPP Rel-17 corpus AND its specReferences are looked up in the corpus after triage. Leave off for non-cellular tickets."
+                >
+                  <input
+                    type="checkbox"
+                    checked={useRag}
+                    onChange={e => persistUseRag(e.target.checked)}
+                    className="w-3.5 h-3.5 accent-accent"
+                  />
+                  <BookText className={`w-3.5 h-3.5 ${useRag ? "text-accent" : "text-slate-500"}`} />
+                  <span>
+                    Use <span className="text-slate-200">3GPP Spec RAG</span>
+                  </span>
+                </label>
+                {/* When the corpus file is downloaded but better-sqlite3
+                    can't open it (almost always missing VC++ runtime on
+                    Windows), RAG queries silently return zero results —
+                    triage falls back to model paraphrase and the "View
+                    clause" button never shows. Surface the diagnostic
+                    here so the user sees it whether they're on the home
+                    page or a ticket page. */}
+                {useRag && corpusEngineError && (
+                  <div className="mt-1 max-w-md text-[10px] text-amber-200/80 bg-amber-500/5 border border-amber-500/30 rounded-md px-2.5 py-1.5 leading-snug">
+                    <div className="flex items-center gap-1 font-medium">
+                      <AlertCircle className="w-3 h-3" />
+                      Corpus engine unavailable
+                    </div>
+                    <div className="mt-0.5 text-amber-200/70">
+                      RAG queries will return no results until the native database engine can load. Install the{" "}
+                      <a
+                        href="https://aka.ms/vs/17/release/vc_redist.x64.exe"
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="text-accent-glow hover:underline"
+                      >
+                        Visual C++ Redistributable (x64)
+                      </a>{" "}
+                      and restart the app.
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
