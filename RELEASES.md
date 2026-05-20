@@ -12,6 +12,32 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.14 — First-launch banner to install the optional 3GPP corpus
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **Corpus is now discoverable on first launch.** New users installing the released `.exe` / `.dmg` / `.AppImage` previously had no nudge to download the optional 3GPP RAG corpus — the only way in was Settings → Spec corpus, which most never opened. They'd run AI triage on the BM25-less fallback path forever without realising they were missing the corpus-backed real-spec-text feature. v0.1.14 surfaces a one-time banner on the home page (Triage Queue) with a single **Download corpus** CTA. Dismissible if the user really doesn't want it; auto-hides once installed; shows live progress while downloading.
+- **Same install pipeline, different entry point.** The banner reuses the existing `/api/corpus/download` endpoint and respects the configured `corpusManifestUrl` (so China-blocked-GitHub users still get their SharePoint mirror once they've set it under Settings). No NSIS / installer scripting needed — the corpus stays a runtime download, which keeps the installer small and works the same on every OS.
+
+### Why this matters
+
+Without the corpus, AI triage falls back to the model's training-data paraphrase of spec sections. With the corpus, triage cites *real* clause text from Rel-17 NR + LTE with proper §-anchored references. The lift is significant on protocol-heavy tickets (RACH, BWP switching, RRC reconfiguration, RF testing). The corpus is ~10 MB gzipped → ~40 MB on disk; one-time download.
+
+### Changes
+
+- `components/corpus/CorpusInstallBanner.tsx` (new) — top-of-page banner that polls `/api/corpus/status`, shows a CTA when the corpus is missing and not dismissed, switches to a progress bar while downloading, and hides itself once installed. Dismissal is persisted via `localStorage["corpusBannerDismissed"]` (clear it to re-show the banner).
+- `app/page.tsx` — mounts the banner above the Triage Queue header.
+
+### Upgrade notes
+
+- Purely additive. Users with the corpus already installed will never see the banner. Users who dismissed it via "Maybe later" can still install via Settings → Spec corpus.
+- For users on a GitHub-blocked network: open Settings → Spec corpus → set the Manifest URL to your SharePoint mirror's manifest.json *before* clicking the banner's Download button — the banner uses whatever's configured at click time.
+
+---
+
 ## v0.1.13 — Restore "View clause" button when model cites a non-leaf section
 
 **Tagged:** —

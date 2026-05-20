@@ -9,6 +9,7 @@ import type {
 } from "@/lib/types";
 import { BUCKET_LABELS } from "@/lib/types";
 import { Logo } from "@/components/ui/Logo";
+import { CorpusInstallBanner } from "@/components/corpus/CorpusInstallBanner";
 import { ProductStatus, TrendBar } from "@/components/dashboard/ProductStatus";
 import { TicketFilters, type FilterState } from "@/components/dashboard/TicketFilters";
 import { TicketTable } from "@/components/dashboard/TicketTable";
@@ -286,6 +287,10 @@ export default function Dashboard() {
       </header>
 
       <main className="max-w-[1600px] mx-auto px-6 py-6 space-y-5">
+        {/* First-launch nudge for installing the optional 3GPP RAG corpus.
+            Self-hides once installed or after the user dismisses it. */}
+        <CorpusInstallBanner />
+
         <div className="flex items-baseline justify-between">
           <div>
             <h1 className="text-xl font-semibold text-slate-100">Triage Queue</h1>
