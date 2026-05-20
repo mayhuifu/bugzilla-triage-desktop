@@ -466,24 +466,48 @@ export async function stats(opts: { product?: string; component?: string; assign
   const bcPairs: Array<readonly [string, string]> = [["severity", "Blocker"], ["severity", "Critical"]];
 
   // Each query returns a list of bug IDs; we just need the count, so ask
-  // for id only and a generous limit. Bugzilla has no count-only endpoint.
+  // for id only and paginate with `offset` to avoid the silent cap of
+  // 10000 that the single-call version hit on large Bugzillas.
+  // Bugzilla's `/rest/bug` has no count-only endpoint; this is the only
+  // way short of running a SQL query directly.
+  //
+  // PAGE_SIZE is the server-side max (also the historical hard-coded cap
+  // — Bugzilla's default `max_search_results` is 10000). SAFETY_MAX_PAGES
+  // caps the worst case at ~500k bugs per query, well above anything
+  // realistic; if a real install hits that bound we'd see the warning
+  // and revisit. Without this safety, a misconfigured Bugzilla returning
+  // a full page every time would loop forever.
   async function countQuery(extra: Params, maxCreation?: string, maxChange?: string): Promise<number> {
-    const params: Array<readonly [string, string]> = [
-      ...base, ...extra,
-      ["include_fields", "id,creation_time,last_change_time"],
-      ["limit", "10000"],
-    ];
-    const data = await bzGet("/rest/bug", params) as { bugs?: Array<{ creation_time?: string; last_change_time?: string }> };
-    let bugs = data.bugs ?? [];
-    // /rest/bug only accepts a >= lower bound on date fields, so the
-    // upper bound for "previous 7d" buckets is filtered client-side.
-    if (maxCreation) {
-      bugs = bugs.filter(b => (b.creation_time ?? "").slice(0, 10) < maxCreation);
+    const PAGE_SIZE = 10000;
+    const SAFETY_MAX_PAGES = 50;
+    let total = 0;
+    for (let page = 0; page < SAFETY_MAX_PAGES; page++) {
+      const params: Array<readonly [string, string]> = [
+        ...base, ...extra,
+        ["include_fields", "id,creation_time,last_change_time"],
+        ["limit", String(PAGE_SIZE)],
+        ["offset", String(page * PAGE_SIZE)],
+      ];
+      const data = await bzGet("/rest/bug", params) as { bugs?: Array<{ creation_time?: string; last_change_time?: string }> };
+      const rawBugs = data.bugs ?? [];
+      let bugs = rawBugs;
+      // /rest/bug only accepts a >= lower bound on date fields, so the
+      // upper bound for "previous 7d" buckets is filtered client-side.
+      if (maxCreation) {
+        bugs = bugs.filter(b => (b.creation_time ?? "").slice(0, 10) < maxCreation);
+      }
+      if (maxChange) {
+        bugs = bugs.filter(b => (b.last_change_time ?? "").slice(0, 10) < maxChange);
+      }
+      total += bugs.length;
+      // Pagination terminator: short page = end of result set. Break on
+      // rawBugs (server-side count), not the post-filter count, because
+      // a date-window filter can reduce a full page to a partial one.
+      if (rawBugs.length < PAGE_SIZE) return total;
     }
-    if (maxChange) {
-      bugs = bugs.filter(b => (b.last_change_time ?? "").slice(0, 10) < maxChange);
-    }
-    return bugs.length;
+    // eslint-disable-next-line no-console
+    console.warn(`[bugzilla] countQuery hit SAFETY_MAX_PAGES (${SAFETY_MAX_PAGES} * ${PAGE_SIZE} = ${SAFETY_MAX_PAGES * PAGE_SIZE}); result may be undercounted`);
+    return total;
   }
 
   // Kick off all 14 queries in parallel.

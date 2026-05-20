@@ -12,6 +12,32 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.27 — Dashboard ticket counts no longer saturate at 10,000
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **Dashboard stats panels (open total / closed total / filed last 7 days / etc.) were silently capping at exactly 10,000.** The hard cap lived in `lib/bugzilla.ts`'s `stats()` function: a single `["limit", "10000"]` parameter on each of 14 `/rest/bug` count queries. Bugzilla's REST API doesn't have a count-only endpoint, so this code asks for IDs only with a large limit — but on Bugzillas with more than 10k bugs in any one bucket the response is truncated and the count clamps. Affected ~every metric on the Triage Queue header for users with a busy Bugzilla.
+- **Fix: paginate via `offset` until the API returns a short page.** Page size is still 10,000 (Bugzilla's default `max_search_results`); the loop walks pages 0…N until one comes back with fewer rows than requested. Real ticket totals up to ~500k are now counted accurately (50-page safety cap; warn-and-truncate beyond that).
+
+### Why this hadn't surfaced before
+
+The 10k truncation looks identical to a real total of 10k for any bucket that genuinely has more than 10k bugs. Date-window buckets ("filed last 7d", "closed prev 7d") almost never hit it because 7 days of bugs is usually small. The Open Total bucket on a long-running Bugzilla with many low-severity tickets is the typical canary — that's what the user saw.
+
+### Changes
+
+- `lib/bugzilla.ts` — `countQuery()` rewritten to loop over `offset` pages of 10,000 until a short page terminates the loop. Adds `SAFETY_MAX_PAGES = 50` (= 500k bugs/query) to bound the worst case; logs a warning and returns the truncated total if hit.
+
+### Upgrade notes
+
+- Dashboard load may take **slightly longer** on installations that genuinely have >10k bugs in one bucket (extra round-trip per additional 10k bugs per query × 14 queries running in parallel). On a Bugzilla with 25k open bugs that's ~3 pages × 14 queries = ~42 HTTP calls instead of the previous 14. All still in parallel under `Promise.all`, so wall-clock impact is small (< 1s extra typically).
+- No schema or settings change.
+- If you see the warning *"countQuery hit SAFETY_MAX_PAGES"* in the standalone server log, raise the constant — but at 500k+ bugs you probably want a different metric strategy anyway.
+
+---
+
 ## v0.1.26 — Pin Electron to ^38.0.0 (LTS) so better-sqlite3 actually loads
 
 **Tagged:** —
