@@ -420,6 +420,19 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
                     : excerpt?.source === "model"
                       ? "[ai paraphrase]"
                       : null;
+                  // When the source is model, show WHY no corpus match —
+                  // gives the user a clear reason for the missing
+                  // View clause button. "spec_not_curated" is the
+                  // common case when DeepSeek cites e.g. 38.304 / 38.133
+                  // — perfectly relevant clauses we just didn't curate.
+                  const lookupReasonText =
+                    excerpt?.lookupReason === "spec_not_curated"
+                      ? "This spec isn't in the curated 3GPP corpus — model paraphrase only."
+                      : excerpt?.lookupReason === "clause_not_found"
+                        ? "Spec is in the corpus, but this clause number didn't resolve to a leaf."
+                        : excerpt?.lookupReason === "no_corpus"
+                          ? "Corpus not installed."
+                          : null;
                   return (
                     <div key={`${t.generatedAt}-spec-${i}`} className="bg-bg-panel/40 rounded-lg p-2 border border-bg-border/40">
                       <div className="flex items-center justify-between gap-2 mb-1">
@@ -430,17 +443,19 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
                               className={`text-[9px] font-mono uppercase tracking-wider px-1.5 py-px rounded ${
                                 excerpt?.source?.startsWith("corpus")
                                   ? "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30"
-                                  : "bg-bg-hover text-slate-400 ring-1 ring-bg-border"
+                                  : excerpt?.lookupReason === "spec_not_curated"
+                                    ? "bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/30"
+                                    : "bg-bg-hover text-slate-400 ring-1 ring-bg-border"
                               }`}
                               title={
                                 excerpt?.source === "corpus+model"
                                   ? "Corpus text + model paraphrase available"
                                   : excerpt?.source === "corpus"
                                     ? "Real text from the local 3GPP Rel-17 corpus"
-                                    : "Model-generated paraphrase only — no corpus match"
+                                    : lookupReasonText || "Model-generated paraphrase only — no corpus match"
                               }
                             >
-                              {sourceTag}
+                              {excerpt?.lookupReason === "spec_not_curated" ? "[not in corpus]" : sourceTag}
                             </span>
                           )}
                           {hasCorpus && (
@@ -462,6 +477,22 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
                         <div className="text-[10px] text-slate-500 mb-1 truncate" title={excerpt.title}>
                           {excerpt.title}
                           {excerpt.parentTitle && ` · ${excerpt.parentTitle}`}
+                        </div>
+                      )}
+                      {/* "Why no View clause button" explanation for
+                          model-only excerpts. Most common case is
+                          spec_not_curated (e.g. 38.304 / 38.133) — give
+                          users a concrete reason instead of a silent
+                          fallback. */}
+                      {!excerpt?.title && lookupReasonText && (
+                        <div
+                          className={`text-[10px] mb-1 italic ${
+                            excerpt?.lookupReason === "spec_not_curated"
+                              ? "text-amber-300/70"
+                              : "text-slate-500"
+                          }`}
+                        >
+                          {lookupReasonText}
                         </div>
                       )}
                       {excerpt ? (

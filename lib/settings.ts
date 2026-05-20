@@ -97,10 +97,9 @@ interface StoredEnvelope {
 }
 
 /** Default corpus manifest URL — the published rel17-v2 manifest on
- *  github.com/mayhuifu/bugzilla-triage-corpus. Users in regions where
- *  GitHub is blocked (e.g. mainland China) override this in Settings to
- *  point at an internal mirror (SharePoint / Confluence / S3) hosting
- *  the same manifest+sqlite.gz pair. */
+ *  github.com/mayhuifu/bugzilla-triage-corpus. v3 (which adds 38.304 /
+ *  38.133 / 36.304 / 36.133) is being built; the default URL will move
+ *  to rel17-v3 in the next release once that publish lands. */
 const DEFAULT_CORPUS_MANIFEST_URL =
   "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v2/3gpp-corpus-rel17-v2-2026-05.manifest.json";
 

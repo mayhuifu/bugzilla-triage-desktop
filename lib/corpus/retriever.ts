@@ -411,18 +411,40 @@ export function lookupClause(reference: string): RetrievedClause | null {
   }
 }
 
-let _v2ColsChecked = false;
-let _v2ColsPresent = false;
+/** Cheap re-checkable column probe. PRAGMA table_info on a tiny table is
+ *  ~microsecond cost so we do NOT cache across calls — a process-level
+ *  cache would persist a v1 reading after an in-process upgrade to v2,
+ *  which has caused silent wrong-path bugs. */
 function corpusHasV2Columns(db: import("better-sqlite3").Database): boolean {
-  if (_v2ColsChecked) return _v2ColsPresent;
-  _v2ColsChecked = true;
   try {
     const cols = db.prepare("PRAGMA table_info('clauses')").all() as Array<{ name: string }>;
-    _v2ColsPresent = cols.some(c => c.name === "tables_json");
+    return cols.some(c => c.name === "tables_json");
   } catch {
-    _v2ColsPresent = false;
+    return false;
   }
-  return _v2ColsPresent;
+}
+
+/** True iff the corpus contains at least one leaf clause for the given
+ *  spec (e.g. "38.211", "38.304"). Used by enrichExcerptsWithCorpus to
+ *  distinguish "spec is curated but this clause / its descendants
+ *  aren't leaves here" from "this spec was never curated" — two states
+ *  the UI should explain differently. Not cached: an in-process corpus
+ *  upgrade (v1→v2 or v2→v3) needs this to immediately reflect the new
+ *  spec set, and a single PK index probe is microsecond-cheap. */
+export function corpusHasSpec(spec: string): boolean {
+  const db = getCorpusDb();
+  if (!db) return false;
+  try {
+    // Match `<spec>#%` against the clauses PK — `<spec>` comes from the
+    // 3GPP citation and `#` is our id separator (see 02-parse.ts of the
+    // corpus pipeline).
+    const row = db.prepare(
+      "SELECT 1 FROM clauses WHERE id LIKE ? || '#%' LIMIT 1",
+    ).get(spec) as { 1?: number } | undefined;
+    return !!row;
+  } catch {
+    return false;
+  }
 }
 
 function safeJsonArray<T>(s: string): T[] {

@@ -31,7 +31,21 @@ import OpenAI from "openai";
 
 import type { TicketDetail, TriageResult, SpecExcerpt } from "./types";
 import { loadSettings } from "./settings";
-import { lookupClause, type RetrievedClause } from "./corpus/retriever";
+import { lookupClause, corpusHasSpec, type RetrievedClause } from "./corpus/retriever";
+import { getCorpusDb } from "./corpus/store";
+
+/** Classify why a lookupClause() call returned null. The UI uses this to
+ *  show a clear "spec not in corpus" / "clause not found" chip instead of
+ *  a generic [ai paraphrase] tag with no explanation. */
+function lookupReasonFor(reference: string): "spec_not_curated" | "clause_not_found" | "no_corpus" {
+  if (!getCorpusDb()) return "no_corpus";
+  // Extract spec number from the model's citation (e.g. "38.304" out of
+  // "3GPP TS 38.304 §5.2.4.5"). If we can't parse, treat as
+  // "clause_not_found" — the spec name is missing/malformed.
+  const m = reference.match(/(?:TS|TR)\s+(\d+\.\d+(?:-\d+)?)/i);
+  if (!m) return "clause_not_found";
+  return corpusHasSpec(m[1]) ? "clause_not_found" : "spec_not_curated";
+}
 
 // Default to Opus 4.7 per Anthropic guidance — the most capable model for
 // the kind of multi-layer domain reasoning (RF physics, 3GPP specs,
@@ -652,9 +666,23 @@ function enrichExcerptsWithCorpus(t: TriageResult): TriageResult {
     if (!hit) {
       // No corpus match — tag whatever the model produced so the UI can
       // distinguish "model-only" from "corpus-backed" excerpts later.
+      // Distinguish the reason: was the spec never curated (most common
+      // when DeepSeek cites 38.304 / 38.133 / etc.), or is the spec in
+      // the corpus but the specific clause doesn't resolve via the
+      // ancestor-prefix fallback either? The UI tooltip / chip differs.
+      const reason = lookupReasonFor(clause);
       const existing = byClause.get(clause);
-      if (existing && !existing.source) {
-        byClause.set(clause, { ...existing, source: "model" });
+      if (existing) {
+        byClause.set(clause, {
+          ...existing,
+          source: existing.source ?? "model",
+          lookupReason: reason,
+        });
+      } else {
+        // The model emitted a reference but no excerpt — synthesise a
+        // bare placeholder so the UI can render the citation + reason
+        // chip even without paraphrase text.
+        byClause.set(clause, { clause, summary: "", source: "model", lookupReason: reason });
       }
       continue;
     }

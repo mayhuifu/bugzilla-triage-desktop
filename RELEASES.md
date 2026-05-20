@@ -12,6 +12,33 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.20 — Diagnose missing "View clause" buttons + "spec not in corpus" UI
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **Self-service diagnostic endpoint** at `/api/corpus/diag`. Returns engine state, schema columns, total clauses, and a live trace of `lookupClause()` against three reference citations (one expected-leaf, two expected-ancestor). Hit it once and the JSON tells us exactly where in the chain (engine load / schema mismatch / SQL miss / parser miss) the bug is.
+- **"Spec not in corpus" UI** — when the AI cites a spec we never curated (e.g. `TS 38.304` or `TS 38.133`), the chip now reads `[not in corpus]` in amber instead of the generic `[ai paraphrase]` in gray. A small italic line under the citation says *"This spec isn't in the curated 3GPP corpus — model paraphrase only."* So users understand it's a coverage gap, not a broken lookup.
+- **Three corpus-state caches removed.** `corpusHasV2Columns()` and `corpusHasSpec()` previously cached at module scope, which meant an in-process upgrade from v1 to v2 (or v2 to v3) read the OLD schema state forever. PRAGMA table_info is microsecond-cheap; just re-check.
+
+### Changes
+
+- `app/api/corpus/diag/route.ts` (new) — JSON dump of engine status, schema columns, total rows, sample SQL probes, and live `lookupClause` traces for known-leaf and known-non-leaf references. Surfaces exactly what's broken on a specific install. Use `Ctrl+Shift+I` → paste the URL `http://localhost:3000/api/corpus/diag` in the network tab and copy the response.
+- `lib/corpus/retriever.ts` — dropped the `_v2ColsChecked` / `_v2ColsPresent` cache and the `_specPresenceCache` Map. Both rechecked per call; cheap.
+- `lib/types.ts` — `SpecExcerpt.lookupReason: "spec_not_curated" | "clause_not_found" | "no_corpus"`. Optional, defaults missing.
+- `lib/llm.ts` — `enrichExcerptsWithCorpus()` now sets `lookupReason` on every model-only excerpt by checking whether the cited spec is even in the corpus, via `corpusHasSpec()`. Also synthesises a bare excerpt for any `specReferences` entry that didn't come with a model summary, so the UI can always render the citation + reason.
+- `components/triage/TriageChatPanel.tsx` — chip text + colour + tooltip now reflect `lookupReason`. Adds an italic explanatory line under model-only citations.
+
+### Upgrade notes
+
+- Purely additive on the API side (`/api/corpus/diag` is a new GET endpoint).
+- The `[not in corpus]` chip only appears when the model cites a spec outside the curated set — for most cellular tickets you won't see it at all.
+- The cache removal is a behaviour fix; nothing changes for users running a stable v2 corpus.
+
+---
+
 ## v0.1.19 — Surface "engine unavailable" warning inside the triage panel
 
 **Tagged:** —

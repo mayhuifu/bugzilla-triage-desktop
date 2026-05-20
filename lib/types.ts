@@ -154,6 +154,20 @@ export interface SpecExcerpt {
    *  - "corpus"       — both summary and realText set; UI shows realText
    *  - "corpus+model" — model paraphrase + corpus realText both available */
   source?: "model" | "corpus" | "corpus+model";
+  /** Reason a corpus match wasn't produced (only set when source === "model"
+   *  and a corpus is installed). Lets the UI explain WHY the View clause
+   *  button is missing instead of users guessing:
+   *   - "spec_not_curated" — the cited spec (e.g. TS 38.304) isn't in the
+   *                          curated rel17-vN set at all. Not a bug; coverage gap.
+   *   - "clause_not_found" — the spec IS in the corpus but the cited clause
+   *                          number doesn't match any leaf, even via the
+   *                          ancestor-prefix fallback. Either the model
+   *                          cited an obsolete / re-numbered clause, or
+   *                          the corpus parser dropped it.
+   *   - "no_corpus"        — corpus isn't installed at all (rare; the UI's
+   *                          RAG toggle is usually gated to hide in this case).
+   */
+  lookupReason?: "spec_not_curated" | "clause_not_found" | "no_corpus";
 }
 
 export interface TriageSubmission {
