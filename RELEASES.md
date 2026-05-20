@@ -12,6 +12,29 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.1.12 — CI release fix: route artifacts straight to the Release, skip workflow-artifact upload on tag pushes
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+- **Re-ship of v0.1.10 + v0.1.11 with the CI release flow fixed.** v0.1.10 and v0.1.11 builds both succeeded on every matrix runner (Windows / macOS / Linux), but the `actions/upload-artifact` step that runs *before* the `softprops/action-gh-release` step failed with `Failed to CreateArtifact: Artifact storage quota has been hit`. Because that step had `if-no-files-found: error`, it failed the whole job, which prevented `Attach to release` from running — so neither version produced an installer on the GitHub Release page.
+- Same code as v0.1.11. If v0.1.11 had shipped successfully it would be functionally identical; v0.1.12 just brings the artifacts.
+
+### Changes
+
+- `.github/workflows/release.yml` — reordered + conditionalised the post-build steps:
+  - `Attach to release` now runs **first** on tag pushes (`if: always() && startsWith(...)`) so the .exe/.dmg/.AppImage land on the GitHub Release via the REST API, which doesn't touch the Actions artifact-storage quota.
+  - `Upload installer` is now scoped to `workflow_dispatch` only — workflow-artifact storage is only useful for dry-runs, never for tag releases (where the Release page is the canonical source).
+
+### Upgrade notes
+
+- Purely build-pipeline. No code or behaviour change vs v0.1.11 from a user perspective.
+- Future tag pushes are no longer blocked by Actions storage quota for this repo. If quota is restored later, dispatch-mode dry-runs will start producing workflow artifacts again automatically.
+
+---
+
 ## v0.1.11 — Package sqlite-vec native binaries in the installer
 
 **Tagged:** —
