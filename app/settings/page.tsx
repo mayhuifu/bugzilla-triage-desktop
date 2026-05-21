@@ -18,7 +18,7 @@ import { CorpusSection } from "@/components/settings/CorpusSection";
 // only — never the raw key. Leaving an input blank on save preserves
 // the existing stored value (handled server-side).
 
-type LlmProvider = "anthropic" | "openai-compatible";
+type LlmProvider = "anthropic" | "openai-compatible" | "claude-cli" | "codex-cli";
 type ThemeMode = "system" | "light" | "dark";
 
 interface SettingsView {
@@ -350,7 +350,11 @@ export default function SettingsPage() {
                 hint={
                   llmProvider === "anthropic"
                     ? "Calls api.anthropic.com directly using the @anthropic-ai/sdk."
-                    : "Calls a custom OpenAI-compatible endpoint (Azure, LiteLLM proxy, Ollama, OpenRouter, vLLM, …)."
+                    : llmProvider === "claude-cli"
+                      ? "Spawns the local `claude` CLI in headless mode (`claude -p`). Uses the Claude Code subscription on this machine — no API key needed. Selected automatically when the dev server is launched from inside a `claude` session."
+                      : llmProvider === "codex-cli"
+                        ? "Spawns the local `codex` CLI in headless mode (`codex exec`). Uses the ChatGPT subscription on this machine — no API key needed. Run `codex login` once to sign in. Supports inline image attachments via `-i`."
+                        : "Calls a custom OpenAI-compatible endpoint (Azure, LiteLLM proxy, Ollama, OpenRouter, vLLM, …)."
                 }
               >
                 <select
@@ -359,73 +363,109 @@ export default function SettingsPage() {
                   onChange={e => onProviderChange(e.target.value as LlmProvider)}
                 >
                   <option value="anthropic">Anthropic (default)</option>
+                  <option value="claude-cli">Claude Code CLI (use my subscription)</option>
+                  <option value="codex-cli">OpenAI Codex CLI (use my ChatGPT subscription)</option>
                   <option value="openai-compatible">OpenAI-compatible (custom URL)</option>
                 </select>
               </Field>
 
-              <Field
-                label={llmProvider === "anthropic" ? "API base URL (optional)" : "API base URL"}
-                hint={
-                  llmProvider === "anthropic"
-                    ? "Leave blank for the default https://api.anthropic.com. Set this only if you route through a corporate proxy or Anthropic-compatible gateway."
-                    : "Required. The /v1 endpoint of your provider — e.g. https://api.openai.com/v1, https://api.openrouter.ai/api/v1, http://localhost:11434/v1 (Ollama)."
-                }
-              >
-                <input
-                  type="url"
-                  className="input"
-                  value={llmBaseUrl}
-                  onChange={e => setLlmBaseUrl(e.target.value)}
-                  placeholder={
+              {llmProvider !== "claude-cli" && llmProvider !== "codex-cli" && (
+                <Field
+                  label={llmProvider === "anthropic" ? "API base URL (optional)" : "API base URL"}
+                  hint={
                     llmProvider === "anthropic"
-                      ? "https://api.anthropic.com"
-                      : "https://api.openai.com/v1"
+                      ? "Leave blank for the default https://api.anthropic.com. Set this only if you route through a corporate proxy or Anthropic-compatible gateway."
+                      : "Required. The /v1 endpoint of your provider — e.g. https://api.openai.com/v1, https://api.openrouter.ai/api/v1, http://localhost:11434/v1 (Ollama)."
                   }
-                />
-              </Field>
-
-              <Field
-                label={llmProvider === "anthropic" ? "Anthropic API key" : "API key"}
-                hint={
-                  view.hasAnthropicApiKey
-                    ? "Leave blank to keep the stored key. Type to replace it."
-                    : llmProvider === "anthropic"
-                      ? "Starts with sk-ant-…"
-                      : "Provider-specific (sk-…, opaque proxy token, etc.)"
-                }
-                rightHint={view.hasAnthropicApiKey ? "(saved)" : undefined}
-              >
-                <div className="relative">
+                >
                   <input
-                    type={showAnthropicKey ? "text" : "password"}
-                    className="input pr-9"
-                    value={anthropicApiKey}
-                    onChange={e => setAnthropicApiKey(e.target.value)}
+                    type="url"
+                    className="input"
+                    value={llmBaseUrl}
+                    onChange={e => setLlmBaseUrl(e.target.value)}
                     placeholder={
-                      view.hasAnthropicApiKey
-                        ? "•••••••••••••••••••••••"
-                        : llmProvider === "anthropic" ? "sk-ant-…" : "sk-… or proxy token"
+                      llmProvider === "anthropic"
+                        ? "https://api.anthropic.com"
+                        : "https://api.openai.com/v1"
                     }
-                    autoComplete="off"
-                    spellCheck={false}
                   />
-                  <button
-                    type="button"
-                    onClick={() => setShowAnthropicKey(v => !v)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
-                    title={showAnthropicKey ? "Hide" : "Show"}
-                  >
-                    {showAnthropicKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                  </button>
+                </Field>
+              )}
+
+              {llmProvider !== "claude-cli" && llmProvider !== "codex-cli" && (
+                <Field
+                  label={llmProvider === "anthropic" ? "Anthropic API key" : "API key"}
+                  hint={
+                    view.hasAnthropicApiKey
+                      ? "Leave blank to keep the stored key. Type to replace it."
+                      : llmProvider === "anthropic"
+                        ? "Starts with sk-ant-…"
+                        : "Provider-specific (sk-…, opaque proxy token, etc.)"
+                  }
+                  rightHint={view.hasAnthropicApiKey ? "(saved)" : undefined}
+                >
+                  <div className="relative">
+                    <input
+                      type={showAnthropicKey ? "text" : "password"}
+                      className="input pr-9"
+                      value={anthropicApiKey}
+                      onChange={e => setAnthropicApiKey(e.target.value)}
+                      placeholder={
+                        view.hasAnthropicApiKey
+                          ? "•••••••••••••••••••••••"
+                          : llmProvider === "anthropic" ? "sk-ant-…" : "sk-… or proxy token"
+                      }
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowAnthropicKey(v => !v)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+                      title={showAnthropicKey ? "Hide" : "Show"}
+                    >
+                      {showAnthropicKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </Field>
+              )}
+
+              {llmProvider === "claude-cli" && (
+                <div className="rounded-md border border-bg-border bg-bg-panel/50 px-3 py-2 text-xs text-slate-400">
+                  No API key required. Make sure the <code className="text-slate-300">claude</code> CLI is
+                  installed on PATH (run <code className="text-slate-300">claude</code> once interactively to
+                  sign in). The default model below maps to your Claude Code subscription — pick{" "}
+                  <code className="text-slate-300">opus</code>,{" "}
+                  <code className="text-slate-300">sonnet</code>, or{" "}
+                  <code className="text-slate-300">haiku</code>.
                 </div>
-              </Field>
+              )}
+
+              {llmProvider === "codex-cli" && (
+                <div className="rounded-md border border-bg-border bg-bg-panel/50 px-3 py-2 text-xs text-slate-400">
+                  No API key required. Install OpenAI Codex CLI
+                  (<code className="text-slate-300">npm i -g @openai/codex</code>) and run{" "}
+                  <code className="text-slate-300">codex login</code> once to sign in with your
+                  ChatGPT subscription. Image attachments are sent natively via{" "}
+                  <code className="text-slate-300">codex exec -i</code>; PDFs are server-side
+                  text-extracted. Leave the model below blank to use whatever{" "}
+                  <code className="text-slate-300">~/.codex/config.toml</code> defaults to, or
+                  type a specific id like{" "}
+                  <code className="text-slate-300">gpt-5</code> /{" "}
+                  <code className="text-slate-300">o3</code>.
+                </div>
+              )}
 
               <Field
                 label="Default model"
                 hint={
-                  modelMode === "custom"
-                    ? "Free-text model ID — must match a model your provider exposes."
-                    : "Anthropic model ID used by the triage step."
+                  llmProvider === "claude-cli"
+                    ? "Passed to `claude --model`. Use short aliases (opus / sonnet / haiku) or full Anthropic model ids."
+                    : llmProvider === "codex-cli"
+                      ? "Passed to `codex --model`. Leave blank to use codex's own configured default. Type any GPT or o-series id your ChatGPT subscription has access to (e.g. gpt-5, o3, o4-mini)."
+                      : modelMode === "custom"
+                        ? "Free-text model ID — must match a model your provider exposes."
+                        : "Anthropic model ID used by the triage step."
                 }
               >
                 <div className="space-y-2">

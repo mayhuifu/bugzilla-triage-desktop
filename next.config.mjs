@@ -22,7 +22,11 @@ const nextConfig = {
   // binary that the bundler can't process. Telling Next.js to externalize
   // it preserves the require() resolution from .next/standalone/node_modules
   // where electron-builder will unpack the prebuild.
-  serverExternalPackages: ["better-sqlite3"],
+  // pdfjs-dist is also externalized — its CommonJS/ESM hybrid layout and
+  // its worker-file path confuse webpack's bundler. The legacy build
+  // runs fine via a runtime import() against the unpacked node_modules,
+  // and keeping it external avoids a fat bundle.
+  serverExternalPackages: ["better-sqlite3", "pdfjs-dist"],
   env: {
     NEXT_PUBLIC_APP_VERSION: pkg.version,
   },

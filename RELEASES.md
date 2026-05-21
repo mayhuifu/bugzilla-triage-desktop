@@ -12,6 +12,68 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.2.0 — Subscription-routed providers, vision + PDF triage, formatting overhaul
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+This is the first minor bump since v0.1.0 — it expands the LLM surface in three meaningful ways AND rewrites how AI output reaches Bugzilla.
+
+- **Two new LLM providers route triage through your existing subscription instead of an API key.**
+  - **Claude Code CLI** (`claude-cli`) spawns `claude -p` locally; uses the Claude Code subscription via keychain OAuth. Auto-selected when launched inside a Claude Code session (`CLAUDECODE=1`) with no Anthropic API key configured.
+  - **OpenAI Codex CLI** (`codex-cli`) spawns `codex exec` locally; uses the ChatGPT subscription. Supports native image attachment via `codex -i` (we save each Bugzilla image to a per-triage tmp dir and pass the path through). PDFs go through text extraction.
+- **Image triage (vision) on every provider that supports it.** When a ticket has `image/{png,jpeg,gif,webp}` attachments and the configured provider/model is vision-capable, the bytes are fetched from Bugzilla and inlined as content blocks alongside the user prompt. Anthropic, GPT-4o/Codex CLI, and any `vision`/`vl`-tagged model get them; DeepSeek/text-only models are auto-skipped with no bandwidth waste.
+- **PDF triage on every provider.** Anthropic uses native `document` blocks (32 MB/100 pages); everyone else (OpenAI-compatible, Claude CLI, Codex CLI) gets server-side text extraction via `pdfjs-dist` legacy build. Per-PDF/per-triage size caps prevent the 50 KB chart PDF from blowing past the DeepSeek context window.
+- **Inline image thumbnails + click-to-zoom lightbox in the ticket detail panel.** A new `/api/tickets/<id>/attachments/<attId>` proxy streams the bytes (5 MB cap, 5-min private cache) — the panel renders an `<img>` thumbnail grid for every image attachment with click-to-expand. Non-image and oversized files keep the existing icon row.
+- **Search by ticket ID works across the entire Bugzilla.** Previously the search box only filtered the loaded 25-row page — searching for a ticket number outside that window returned nothing. Now any pure-numeric query debounces 300 ms, fetches `/api/tickets/<id>` directly, and pins the result regardless of the active scope (product/component/status).
+- **Bugzilla comment formatting fix.** The umsemi Bugzilla renders markdown but doesn't recognise triple-backtick fenced code blocks — every previous AI comment had its underscores italicized (`harq_gain_param_input` → `harq*gain*param*input`), bullets collapsed into flowing paragraphs, and the CLASSIFICATION header rendered as an H1. The new path 4-space-indents every line of the structured body so it renders as `<pre><code>` in any markdown renderer — bullets, underscores, line breaks, and the `==========` separators all survive.
+- **AI brevity directive.** SYSTEM_PROMPT + schema now enforce ≤ 25 words per bullet, ≤ 3 hypotheses, ≤ 4 next-step owners, and 1-sentence (≤ 25 words, ≤ 160 chars) spec-clause summaries. The CLASSIFICATION header no longer dumps the full corpus excerpt — just the clause + a one-line summary. Net effect: typical comment dropped from ~6,900 chars to ~2,800 chars without losing signal.
+- **Model badge in the Initial Classification bubble.** Tells you at a glance which model produced a triage (`claude-opus-4-7`, `gpt-5.5`, `deepseek-v4-pro`, etc.) — useful when comparing runs across providers.
+
+### Changes
+
+**New providers**
+
+- `lib/settings.ts` — `LlmProvider` extended to `"anthropic" | "openai-compatible" | "claude-cli" | "codex-cli"`. Env auto-detection: when `CLAUDECODE=1` and no Anthropic key, defaults to `claude-cli`.
+- `lib/llm.ts` — new dispatch branches `runTriageClaudeCli` and `runTriageCodexCli`. Each shells out via Node `child_process.spawn`, captures the answer from `-o <file>` (Codex) or `--output-format json` (Claude), parses, runs the same `fillTriageDefaults` + corpus enrichment + classification-header pipeline as the API-key paths. ENOENT → friendly "install + login" error.
+- Codex CLI bug fixes: `-i / --image` is variadic in clap (it eats the positional `<prompt>` → codex falls back to stdin → exits 1), so we pass `-` as the prompt sentinel and pipe via `child.stdin`. The ChatGPT subscription rejects uppercased model ids (`'GPT-5.5' not supported` while `gpt-5.5` works), so we lowercase before passing through.
+- Claude CLI bug fix: `--bare` flag strips OAuth keychain reads — removed, so subscription auth works.
+- `app/settings/page.tsx` — Provider dropdown gains "Claude Code CLI (use my subscription)" and "OpenAI Codex CLI (use my ChatGPT subscription)" entries; hides API URL/key fields when a CLI provider is selected; shows install-instructions card per provider.
+
+**Vision + PDF**
+
+- `lib/llm.ts` — `providerSupportsVision(provider, model)` allowlist (Anthropic + Codex CLI + GPT-4o/o-series + Claude-via-proxy + `*vision*`/`*vl*` patterns; explicit `deepseek-*` → false). `loadImageAttachments(ticket)` fetches via the existing `attachments()` helper (5 MB cap inherited), pre-filters on metadata so tickets without images skip the round-trip.
+- `lib/llm.ts` — `loadPdfAttachments(ticket, nativeSupported)` returns either native PDF blobs (Anthropic) or extracted text (everyone else). `extractPdfText` uses pdfjs-dist legacy build with `useSystemFonts: false`, `disableFontFace: true` for hardened parsing of untrusted PDFs. Caps: 5 PDFs / 50 KB text per file / 200 KB total / 100 pages.
+- `lib/llm.ts` — Anthropic + OpenAI provider paths build multimodal content arrays when images present; manifest-injection prompt tells the model "quote specific values you can read off the images/PDFs in OBSERVED".
+- `package.json` — `pdfjs-dist@^5.7.284` added; `next.config.mjs` adds it to `serverExternalPackages` so it isn't bundled by webpack.
+- `app/api/tickets/[id]/attachments/[attachmentId]/route.ts` — new attachment proxy route. Streams base64-decoded bytes from Bugzilla with the correct `Content-Type` + 5-minute private cache.
+
+**UI**
+
+- `components/detail/TicketDescription.tsx` — image attachments render as a 2-4 col thumbnail grid above the existing file list; click opens a full-screen lightbox (ESC + backdrop click + X button all close; download button preserves the original filename via `Content-Disposition`). Oversized images (> 5 MB) fall back to the icon row with "too large to preview" hint.
+- `components/detail/TicketComments.tsx` — long comments (> 800 chars) collapse with a "Show full comment (N chars)" toggle; per-comment state keyed by comment id; max panel height bumped 480 → 640 px.
+- `app/page.tsx` — direct ticket-ID lookup: numeric search queries debounce 300 ms and fetch `/api/tickets/<id>`, pinning the result at the top of the filtered list with an "(outside current scope)" hint. Includes three UX states: looking up, pinned, not found.
+- `components/triage/TriageChatPanel.tsx` — model badge in the Initial Classification bubble next to the confidence + domain chips. Hover shows "Generated by <model> on <timestamp>".
+
+**Comment formatting + brevity**
+
+- `lib/bugzilla.ts` — new `indentAsCodeBlock(text)` helper 4-space-indents every line of the AI-generated body. The `Analyzed by AI Triage Bot:` prefix stays outside the indented block so it renders as a plain paragraph header (no Setext H1 surprise). Also passes `is_markdown: false` as belt-and-suspenders (harmless if the server ignores it).
+- `lib/llm.ts` — SYSTEM_PROMPT gains a `BREVITY (load-bearing)` block: ≤ 25 words per bullet, 3-6 OBSERVED, 2-4 INFERRED, ≤ 3 HYPOTHESIS, ≤ 4 NEXT STEPS owners; no padding adverbs; no multi-clause sentences within a bullet. Spec-excerpt summaries capped at ≤ 25 words / 160 chars.
+- `lib/llm.ts` — `pickHeaderBody` drops the `[corpus]` / `[ai paraphrase]` tag prefix from the Bugzilla comment body (tag still shown in the on-screen UI card for transparency); uses only `summary`, never realText. `condenseForHeader(text, maxLen)` accepts a length param; CLASSIFICATION header passes 160.
+
+### Upgrade notes
+
+- **No schema migration.** The `Settings` shape gains support for two new `llmProvider` enum values; older saved settings.json files load fine — they keep their existing provider.
+- **CLI providers are opt-in.** To switch, open Settings → Provider → "Claude Code CLI" or "OpenAI Codex CLI". The CLI binary must be on PATH and authenticated (`claude` / `codex login` once interactively).
+- **Codex CLI: model id case matters.** If you've previously typed an uppercase model id (e.g. `GPT-5.5`), edit it to lowercase or leave it blank to use `~/.codex/config.toml`. The dispatch auto-lowercases on the fly but if you re-save Settings, the field re-stores whatever you typed.
+- **DeepSeek users**: no behavioural change. Images skipped (provider doesn't support vision); PDF text extracted into the prompt; comment formatting + brevity improvements apply equally.
+- **Anthropic API users**: now get native PDF document blocks. Token cost per triage on tickets with PDFs goes up a bit because PDFs are real content, not metadata. Cap if needed by editing `MAX_PDFS_NATIVE` in `lib/llm.ts`.
+- **Bugzilla comment width**: 4-space indentation makes the comment slightly wider in raw form (every line + 4 chars). Most Bugzilla `<pre>` blocks wrap; if yours doesn't, the indented box will horizontal-scroll for very long lines.
+
+---
+
 ## v0.1.27 — Dashboard ticket counts no longer saturate at 10,000
 
 **Tagged:** —

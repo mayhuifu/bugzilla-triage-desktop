@@ -40,8 +40,26 @@ const SCHEMA_VERSION = 1;
  *                           Works with any provider that speaks the OpenAI
  *                           Chat Completions API: OpenAI itself, Azure OpenAI,
  *                           LiteLLM proxy, Ollama, LM Studio, etc.
+ *  - "claude-cli"         → spawn the local `claude` CLI in headless mode
+ *                           (`claude -p --output-format json`). Uses the
+ *                           authenticated Claude Code subscription on the
+ *                           host machine — no API key needed. Selected
+ *                           automatically when the dev server is launched
+ *                           from inside a Claude Code session
+ *                           (process.env.CLAUDECODE === "1") and no
+ *                           Anthropic API key is stored.
+ *  - "codex-cli"          → spawn the local `codex` CLI (OpenAI Codex) in
+ *                           headless mode (`codex exec --skip-git-repo-check
+ *                           --sandbox read-only --ephemeral`). Uses the
+ *                           authenticated ChatGPT subscription on the host
+ *                           machine — no API key needed. Supports native
+ *                           image input via the CLI's `-i / --image` flag;
+ *                           PDFs go through our text-extraction path same
+ *                           as the OpenAI-compatible branch. Auto-detect
+ *                           is opt-in only (no env signal as clean as
+ *                           CLAUDECODE=1) — pick it explicitly in Settings.
  */
-export type LlmProvider = "anthropic" | "openai-compatible";
+export type LlmProvider = "anthropic" | "openai-compatible" | "claude-cli" | "codex-cli";
 
 /** Theme preference, persisted to settings.json (added in v0.1.4).
  *  - "system" (default): follow prefers-color-scheme; live-updates if the
@@ -167,8 +185,27 @@ let _cache: Settings | null = null;
  * but the file wins once the user has saved anything. */
 function envSettings(): Settings {
   const provider = (process.env.LLM_PROVIDER || "").toLowerCase();
+  // Auto-detect Claude Code CLI: when the desktop's Next.js dev server is
+  // launched from inside a `claude` session, CLAUDECODE=1 is set in the
+  // child environment. If the user hasn't explicitly picked another
+  // provider AND has no Anthropic API key configured, route triage
+  // through the local `claude` subprocess so it uses the host's Claude
+  // subscription (no API key). The user can still override via
+  // LLM_PROVIDER=anthropic or by saving a provider in Settings.
+  const inClaudeCode = process.env.CLAUDECODE === "1";
+  const noKey = !process.env.ANTHROPIC_API_KEY;
   const llmProvider: LlmProvider =
-    provider === "openai-compatible" ? "openai-compatible" : "anthropic";
+    provider === "claude-cli"
+      ? "claude-cli"
+      : provider === "codex-cli"
+        ? "codex-cli"
+        : provider === "openai-compatible"
+          ? "openai-compatible"
+          : provider === "anthropic"
+            ? "anthropic"
+            : inClaudeCode && noKey
+              ? "claude-cli"
+              : "anthropic";
   const themeEnv = (process.env.THEME_MODE || "").toLowerCase();
   const themeMode: ThemeMode =
     themeEnv === "light" || themeEnv === "dark" || themeEnv === "system"
@@ -272,6 +309,8 @@ export function validateSettings(s: Partial<Settings>): string[] {
   // LLM key shape check is conditional on provider. Anthropic keys have a
   // very recognizable prefix; OpenAI-compatible providers use everything
   // from `sk-…` to opaque proxy tokens, so we don't try to validate format.
+  // The claude-cli provider needs neither key nor URL — it uses the
+  // local `claude` binary's stored auth.
   if (s.llmProvider === "anthropic" && s.anthropicApiKey && !s.anthropicApiKey.startsWith("sk-ant-")) {
     errors.push("Anthropic API key should start with sk-ant-");
   }
@@ -281,8 +320,11 @@ export function validateSettings(s: Partial<Settings>): string[] {
     } else if (!/^https?:\/\//.test(s.llmBaseUrl)) {
       errors.push("LLM base URL must start with http:// or https://");
     }
-  } else if (s.llmBaseUrl?.trim() && !/^https?:\/\//.test(s.llmBaseUrl)) {
-    // baseURL is optional for Anthropic, but if set must be a valid http(s) URL.
+  } else if (s.llmProvider !== "claude-cli" && s.llmProvider !== "codex-cli"
+             && s.llmBaseUrl?.trim() && !/^https?:\/\//.test(s.llmBaseUrl)) {
+    // baseURL is optional for Anthropic, but if set must be a valid
+    // http(s) URL. claude-cli and codex-cli ignore baseURL entirely
+    // (they use the CLI's own auth path) so we don't validate it.
     errors.push("LLM base URL must start with http:// or https://");
   }
   return errors;

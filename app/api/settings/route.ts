@@ -31,7 +31,10 @@ export async function POST(req: NextRequest) {
 
   const current = loadSettings();
   const llmProvider: Settings["llmProvider"] =
-    body.llmProvider === "openai-compatible" || body.llmProvider === "anthropic"
+    body.llmProvider === "openai-compatible" ||
+    body.llmProvider === "anthropic" ||
+    body.llmProvider === "claude-cli" ||
+    body.llmProvider === "codex-cli"
       ? body.llmProvider
       : current.llmProvider;
   const themeMode: Settings["themeMode"] =

@@ -157,17 +157,94 @@ export default function Dashboard() {
     loadTickets(ticketQuery);
   }, [configured, ticketQuery, filters.myTickets, whoami?.login, loadTickets]);
 
+  // ── Direct ticket-ID lookup ──────────────────────────────────────────
+  // When the user types a pure numeric query (e.g. "14553"), the client-
+  // side filter alone can't surface that ticket unless it happens to be
+  // in the currently-loaded page window. We special-case this: debounce
+  // the query, fetch /api/tickets/<id> directly, and prepend the result
+  // into the filtered list so the ticket shows up regardless of the
+  // active scope (product / component / status / bucket). Empty/non-
+  // numeric / already-loaded queries skip the fetch entirely.
+  const [directHit, setDirectHit] = useState<TicketSummary | null>(null);
+  const [directLookupState, setDirectLookupState] =
+    useState<"idle" | "loading" | "not-found">("idle");
+
+  useEffect(() => {
+    const q = filters.q.trim();
+    if (!q || !/^\d+$/.test(q)) {
+      setDirectHit(null);
+      setDirectLookupState("idle");
+      return;
+    }
+    const targetId = parseInt(q, 10);
+    if (!targetId) {
+      setDirectHit(null);
+      setDirectLookupState("idle");
+      return;
+    }
+    // Already in the loaded list → the client-side filter handles it.
+    // Also covers the case where the user pasted an id that happens to
+    // be visible right now.
+    if (tickets.some(t => t.id === targetId)) {
+      setDirectHit(null);
+      setDirectLookupState("idle");
+      return;
+    }
+    // If the previous direct-hit happened to be the same id (typing
+    // "1455" → "14553"), keep it visible while we re-fetch.
+    if (directHit?.id !== targetId) setDirectHit(null);
+    setDirectLookupState("loading");
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/tickets/${targetId}`);
+        if (cancelled) return;
+        if (!res.ok) {
+          // 404 from Bugzilla (no such ticket) OR 502 (Bugzilla down /
+          // perms). Both render as "not found" — the user can re-check
+          // the number or open Bugzilla directly.
+          setDirectHit(null);
+          setDirectLookupState("not-found");
+          return;
+        }
+        const data = await res.json();
+        if (cancelled) return;
+        if (data?.ticket) {
+          setDirectHit(data.ticket as TicketSummary);
+          setDirectLookupState("idle");
+        } else {
+          setDirectHit(null);
+          setDirectLookupState("not-found");
+        }
+      } catch {
+        if (cancelled) return;
+        setDirectHit(null);
+        setDirectLookupState("not-found");
+      }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // `directHit?.id` is included so a switch from one direct hit to
+    // another mid-typing doesn't leave stale UI.
+  }, [filters.q, tickets, directHit?.id]);
+
   // ── Client-side narrowing: freetext only (severity/status now server-side)
+  // The base array is the loaded page plus any direct-id hit fetched
+  // above. The freetext filter is then applied — for numeric queries the
+  // direct hit naturally passes (its String(id) matches q), and for word
+  // queries the direct hit is empty so this collapses to the old shape.
   const filtered = useMemo(() => {
-    if (!filters.q) return tickets;
+    const base = directHit
+      ? [directHit, ...tickets.filter(t => t.id !== directHit.id)]
+      : tickets;
+    if (!filters.q) return base;
     const q = filters.q.toLowerCase();
-    return tickets.filter(t =>
+    return base.filter(t =>
       t.summary.toLowerCase().includes(q) ||
       String(t.id).includes(q) ||
       t.assignee.toLowerCase().includes(q) ||
       t.component.toLowerCase().includes(q),
     );
-  }, [tickets, filters.q]);
+  }, [tickets, directHit, filters.q]);
 
   const componentsFromLoaded = useMemo(
     () => Array.from(new Set(tickets.map(t => t.component))).sort(),
@@ -298,12 +375,29 @@ export default function Dashboard() {
               AI-assisted bug triage with human approval. All Bugzilla writes are gated by your review.
             </p>
           </div>
-          <div className="text-xs text-slate-500">
-            Showing <span className="text-slate-300 font-medium">{filtered.length}</span>
-            {filters.q && filtered.length !== tickets.length && (
-              <span> of <span className="text-slate-300">{tickets.length}</span> loaded</span>
+          <div className="text-xs text-slate-500 text-right">
+            <div>
+              Showing <span className="text-slate-300 font-medium">{filtered.length}</span>
+              {filters.q && filtered.length !== tickets.length && (
+                <span> of <span className="text-slate-300">{tickets.length}</span> loaded</span>
+              )}
+              {!filters.q && hasMore && <span className="text-slate-500"> (more available)</span>}
+            </div>
+            {directLookupState === "loading" && (
+              <div className="text-[11px] text-slate-500 mt-0.5 inline-flex items-center gap-1">
+                <Loader2 className="w-3 h-3 animate-spin" /> Looking up #{filters.q.trim()}…
+              </div>
             )}
-            {!filters.q && hasMore && <span className="text-slate-500"> (more available)</span>}
+            {directLookupState === "not-found" && (
+              <div className="text-[11px] text-amber-400/80 mt-0.5">
+                Ticket #{filters.q.trim()} not found
+              </div>
+            )}
+            {directHit && (
+              <div className="text-[11px] text-accent-glow mt-0.5">
+                Pinned ticket #{directHit.id} (outside current scope)
+              </div>
+            )}
           </div>
         </div>
 

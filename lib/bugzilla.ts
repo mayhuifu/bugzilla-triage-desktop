@@ -339,6 +339,31 @@ export async function fetchTicket(id: number): Promise<{ ticket: TicketDetail }>
   };
 }
 
+/** Render a comment body as a markdown code block by 4-space-indenting
+ *  every line. The umsemi Bugzilla renders markdown but apparently
+ *  doesn't recognise the modern triple-backtick fenced-code-block
+ *  syntax — we tried it (commit history references `wrapInCodeFence`)
+ *  and the rendered output still had collapsed bullets and italicized
+ *  underscores. 4-space indentation is the ORIGINAL Gruber-Markdown
+ *  code-block syntax and is supported by every renderer, including
+ *  the older Bugzilla::Markdown variants.
+ *
+ *  Every non-empty line gets a 4-space prefix. Blank lines stay blank
+ *  (CommonMark accepts either bare or 4-space-prefixed blanks inside
+ *  an indented block). The markdown engine then renders the whole
+ *  block as `<pre><code>...</code></pre>` — every newline, hyphen,
+ *  indent, and underscore preserved as written. Identifiers like
+ *  `harq_gain_param_input` survive (no italics), section headers
+ *  with `=========` underlines don't become H1, and hyphen-bullets
+ *  on separate lines stay on separate lines. */
+function indentAsCodeBlock(text: string): string {
+  // Normalize CRLF to LF first so the prefix lands per-line correctly.
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  return lines
+    .map(line => (line.length === 0 ? "" : "    " + line))
+    .join("\n");
+}
+
 // ── submit (post comment + transition + cf_label) ────────────────
 
 export async function submit(opts: {
@@ -363,10 +388,41 @@ export async function submit(opts: {
 
   // 1. Post the comment. AI flow auto-prefixes with "Analyzed by AI Triage Bot:";
   //    manual flow posts the comment as-typed.
+  //
+  // Bugzilla rendering: we tried `is_markdown: false` but the umsemi
+  // server ignores it (some Bugzilla installs force markdown on
+  // regardless). Empirical evidence from a posted comment:
+  //   - "Analyzed by AI Triage Bot: CLASSIFICATION\n=============="
+  //     rendered as a Setext H1 heading (the ==== underline grabbed
+  //     the prefix line as a level-1 header)
+  //   - "harq_gain_param_input" rendered as "harq*gain*param*input"
+  //     (underscores treated as italic markers)
+  //   - Hyphen-bullets across separate lines collapsed into one
+  //     flowing paragraph because markdown treats single newlines as
+  //     spaces
+  //
+  // Reliable workaround: wrap the structured body in a markdown
+  // CODE FENCE (```…```) so the renderer treats it as preformatted
+  // monospace text. The Analyzed-by-AI-Triage-Bot prefix stays
+  // OUTSIDE the fence so it renders as a normal plain-text paragraph
+  // (no Setext H1 surprise) — and the fenced content keeps every
+  // newline, indent, hyphen, and underscore intact. We also keep
+  // is_markdown=false as belt-and-suspenders: harmless if the server
+  // ignores it, an extra guard if it doesn't.
+  const stripped = comment.startsWith(ANALYSIS_PREFIX)
+    ? comment.slice(ANALYSIS_PREFIX.length).replace(/^\s+/, "")
+    : comment;
+  // A blank line BEFORE the indented block is required by markdown
+  // for the renderer to recognise it as a code block (otherwise it
+  // gets merged into the preceding paragraph and loses the <pre>
+  // treatment). We include two newlines after the prefix to be safe.
   const body = manual
-    ? comment
-    : (comment.startsWith(ANALYSIS_PREFIX) ? comment : `${ANALYSIS_PREFIX} ${comment}`);
-  const commentRes = await bzPost(`/rest/bug/${id}/comment`, { comment: body }) as { id?: number };
+    ? indentAsCodeBlock(comment)
+    : `${ANALYSIS_PREFIX}\n\n${indentAsCodeBlock(stripped)}`;
+  const commentRes = await bzPost(`/rest/bug/${id}/comment`, {
+    comment: body,
+    is_markdown: false,
+  }) as { id?: number };
   const commentId = commentRes.id;
 
   // 2. Append the "Analyzed by AI Triage Bot" cf_label — AI flow only.

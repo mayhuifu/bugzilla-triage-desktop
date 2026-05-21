@@ -1,7 +1,7 @@
 {
   "name": "bugzilla-triage-desktop",
   "productName": "Bugzilla AI Triage",
-  "version": "0.1.27",
+  "version": "0.2.0",
   "private": true,
   "description": "Standalone Windows app for AI-assisted Bugzilla triage. Sister product to bugzilla-triage-dashboard (the original Claude Code CLI version).",
   "main": "electron/main.cjs",
@@ -23,6 +23,7 @@
     "lucide-react": "^0.460.0",
     "next": "^15.1.0",
     "openai": "^6.38.0",
+    "pdfjs-dist": "^5.7.284",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "sqlite-vec": "^0.1.6"
