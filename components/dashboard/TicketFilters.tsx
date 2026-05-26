@@ -2,11 +2,13 @@
 
 import { Search, Filter, User } from "lucide-react";
 import type { ProductInfo, WhoAmI } from "@/lib/types";
+import { AssigneeFilter } from "./AssigneeFilter";
 
 export interface FilterState {
   q: string;
   product: string;     // "" = all products
   component: string;   // "" = all components
+  assignee: string;    // "" = all assignees; full email — e.g. "joachim.wehinger@umsemi.com"
   severity: string;
   status: string;
   myTickets: boolean;
@@ -17,6 +19,7 @@ export function TicketFilters({
   onChange,
   products,
   componentOptions,
+  assigneeOptions,
   whoami,
   bucketActive = false,
 }: {
@@ -27,6 +30,11 @@ export function TicketFilters({
   // fallback when no product is selected (so the dropdown still has options
   // before the products endpoint resolves).
   componentOptions: string[];
+  // Assignees observed in the *currently loaded* ticket list, alphabetized.
+  // Like componentOptions, this narrows as filters are applied — picking
+  // a product or component shrinks the assignee list to engineers visible
+  // in that scope. Empty array → dropdown is disabled.
+  assigneeOptions: string[];
   whoami: WhoAmI | null;
   // When the user has clicked a status card, the bucket filter overrides
   // these dropdowns server-side. We disable them visually so the user
@@ -40,13 +48,22 @@ export function TicketFilters({
     ? products.find(p => p.name === state.product)?.components ?? []
     : componentOptions;
 
+  // When My Tickets is on, the assignee param is already set to whoami.login
+  // server-side — the assignee dropdown would be a no-op (or worse, conflict).
+  // Disable it visually so the user knows the two are mutually exclusive.
+  const assigneeDisabled = state.myTickets;
+
   return (
     <div className="card p-3 flex flex-wrap items-center gap-2">
       <div className="relative flex-1 min-w-[240px]">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
         <input
           className="input pl-9"
-          placeholder="Search by ID, summary, assignee, component…"
+          // Numeric → direct ticket-ID fetch (pins outside current scope).
+          // Non-numeric ≥ 2 chars → debounced Bugzilla quicksearch
+          // (searches summary, assignee, component, comments, description).
+          // 1-char → client-side narrowing of the loaded page only.
+          placeholder="Type a ticket #, name, component, or phrase — searches Bugzilla server-side"
           value={state.q}
           onChange={e => onChange({ ...state, q: e.target.value })}
         />
@@ -76,6 +93,17 @@ export function TicketFilters({
         <option value="">All components</option>
         {componentsForProduct.map(c => <option key={c} value={c}>{c}</option>)}
       </select>
+
+      <AssigneeFilter
+        value={state.assignee}
+        onChange={email => onChange({ ...state, assignee: email })}
+        // Loaded-ticket assignees serve as instant suggestions while
+        // the input is empty + focused. Typing >=2 chars triggers a
+        // live Bugzilla /rest/user search and replaces them.
+        recentSuggestions={assigneeOptions}
+        disabled={assigneeDisabled}
+        disabledReason="Cleared by My Tickets — turn that off to pick a different assignee"
+      />
 
       <select
         className="input w-auto disabled:opacity-40"

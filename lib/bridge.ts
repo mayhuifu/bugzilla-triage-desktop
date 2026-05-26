@@ -15,7 +15,7 @@
 import type { TicketDetail, TriageResult } from "./types";
 
 import {
-  search, fetchTicket, submit, products, whoami, stats, getConfig,
+  search, fetchTicket, submit, products, whoami, stats, getConfig, findUsers,
   type BridgeConfig as BugzillaConfig,
 } from "./bugzilla";
 
@@ -41,6 +41,10 @@ export async function bridgeProducts() {
 
 export async function bridgeWhoami() {
   return whoami();
+}
+
+export async function bridgeFindUsers(match: string, limit?: number) {
+  return findUsers(match, limit);
 }
 
 export async function bridgeStats(opts: Parameters<typeof stats>[0]) {

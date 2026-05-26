@@ -20,7 +20,7 @@ const PAGE_SIZE = 25;          // initial number of tickets shown
 const PAGE_INCREMENT = 25;     // each "Load more" click
 
 const INITIAL_FILTERS: FilterState = {
-  q: "", product: "", component: "", severity: "", status: "", myTickets: false,
+  q: "", product: "", component: "", assignee: "", severity: "", status: "", myTickets: false,
 };
 
 export default function Dashboard() {
@@ -52,26 +52,56 @@ export default function Dashboard() {
   // Page size for the ticket table. Bumps by PAGE_INCREMENT on "Load more".
   const [ticketLimit, setTicketLimit] = useState<number>(PAGE_SIZE);
 
+  // ── Debounced freetext query (for server-side Bugzilla quicksearch) ──
+  // When the user types a non-numeric search term (assignee, component,
+  // word in summary, natural-language phrase) we forward it to Bugzilla
+  // as `quicksearch=` after a 300 ms idle so we don't fire a request per
+  // keystroke. Numeric queries are excluded — those go through the
+  // direct-ticket-ID lookup path below, which fetches `/api/tickets/<id>`
+  // and pins one ticket. Pure 1-char terms are also skipped (too noisy
+  // on a busy Bugzilla).
+  const [debouncedQ, setDebouncedQ] = useState("");
+  useEffect(() => {
+    const q = filters.q.trim();
+    if (!q || /^\d+$/.test(q) || q.length < 2) {
+      setDebouncedQ("");
+      return;
+    }
+    const timer = setTimeout(() => setDebouncedQ(q), 300);
+    return () => clearTimeout(timer);
+  }, [filters.q]);
+
   // ── Server-side scope query ─────────────────────────────────────────
   // Product/component/my-tickets always go to the server (they change the
   // population we count over). Bucket also goes server-side and overrides
   // the severity/status dropdowns. The dropdowns are passed only when no
-  // bucket is active. Freetext stays client-side narrowing.
+  // bucket is active. Non-numeric freetext goes server-side as
+  // `quicksearch=` so users can find tickets that aren't in the loaded
+  // page window (assignees, components, summary terms, natural language).
   const serverQuery = useMemo(() => {
     const qs = new URLSearchParams();
     if (filters.product) qs.set("product", filters.product);
     if (filters.component) qs.set("component", filters.component);
-    if (filters.myTickets && whoami?.login) qs.set("assignee", whoami.login);
+    // Assignee param precedence: My Tickets > explicit assignee dropdown.
+    // The dropdown is also disabled in the UI when myTickets is on, but
+    // belt-and-suspenders so a stale value can't sneak through.
+    if (filters.myTickets && whoami?.login) {
+      qs.set("assignee", whoami.login);
+    } else if (filters.assignee) {
+      qs.set("assignee", filters.assignee);
+    }
     if (bucket) {
       qs.set("bucket", bucket);
     } else {
       if (filters.severity) qs.set("severity", filters.severity);
       if (filters.status) qs.set("status", filters.status);
     }
+    if (debouncedQ) qs.set("q", debouncedQ);
     return qs.toString();
   }, [
-    filters.product, filters.component, filters.myTickets, whoami?.login,
-    bucket, filters.severity, filters.status,
+    filters.product, filters.component, filters.assignee,
+    filters.myTickets, whoami?.login,
+    bucket, filters.severity, filters.status, debouncedQ,
   ]);
 
   // Limit is part of the same useEffect trigger but kept separate so we can
@@ -227,16 +257,31 @@ export default function Dashboard() {
     // another mid-typing doesn't leave stale UI.
   }, [filters.q, tickets, directHit?.id]);
 
-  // ── Client-side narrowing: freetext only (severity/status now server-side)
-  // The base array is the loaded page plus any direct-id hit fetched
-  // above. The freetext filter is then applied — for numeric queries the
-  // direct hit naturally passes (its String(id) matches q), and for word
-  // queries the direct hit is empty so this collapses to the old shape.
+  // ── Client-side narrowing for the freetext box ───────────────────────
+  // Three cases:
+  //
+  //  1. Empty query → no narrowing, show everything `tickets` returned.
+  //  2. Numeric query → server-side direct ID lookup pins `directHit` at
+  //     the top; we still re-filter the loaded list so other tickets
+  //     containing those digits in their id/summary/etc. also rank.
+  //  3. Non-numeric query (length ≥ 2) → Bugzilla's quicksearch already
+  //     filtered server-side (potentially matching against comments /
+  //     description / fields the client doesn't have). Re-filtering here
+  //     with `summary.includes(q)` would DROP server-returned tickets
+  //     that matched on description — so we trust the server and skip
+  //     the client filter for this case.
+  //
+  // Shorter non-numeric queries (1 char) are too noisy for server search
+  // so they bypass the debounce → fall back to client-side narrowing on
+  // whatever's loaded, which is fine.
   const filtered = useMemo(() => {
     const base = directHit
       ? [directHit, ...tickets.filter(t => t.id !== directHit.id)]
       : tickets;
     if (!filters.q) return base;
+    const trimmed = filters.q.trim();
+    const isServerHandled = !/^\d+$/.test(trimmed) && trimmed.length >= 2;
+    if (isServerHandled) return base;   // server already filtered
     const q = filters.q.toLowerCase();
     return base.filter(t =>
       t.summary.toLowerCase().includes(q) ||
@@ -251,10 +296,22 @@ export default function Dashboard() {
     [tickets],
   );
 
+  // Assignees observed in the currently-loaded tickets, deduplicated and
+  // alphabetized. Mirrors the componentsFromLoaded pattern — the
+  // dropdown narrows as the scope narrows. Filters out empty/undefined
+  // assignees (Bugzilla can omit the field on some imported bugs).
+  const assigneesFromLoaded = useMemo(
+    () => Array.from(
+      new Set(tickets.map(t => t.assignee).filter(Boolean) as string[])
+    ).sort(),
+    [tickets],
+  );
+
   const scopeLabel = useMemo(() => {
     const parts: string[] = [];
     if (filters.product) parts.push(filters.product);
     if (filters.component) parts.push(filters.component);
+    if (filters.assignee && !filters.myTickets) parts.push(`@${filters.assignee.split("@")[0]}`);
     if (filters.myTickets && whoami?.login) parts.push(`@${whoami.login.split("@")[0]}`);
     return parts.length ? parts.join(" · ") : "all products";
   }, [filters.product, filters.component, filters.myTickets, whoami?.login]);
@@ -381,8 +438,35 @@ export default function Dashboard() {
               {filters.q && filtered.length !== tickets.length && (
                 <span> of <span className="text-slate-300">{tickets.length}</span> loaded</span>
               )}
-              {!filters.q && hasMore && <span className="text-slate-500"> (more available)</span>}
+              {hasMore && <span className="text-slate-500"> (more available — Load more below)</span>}
             </div>
+            {/* Non-numeric search states. Three flavours:
+                  - pending debounce (user is still typing)
+                  - in-flight (Bugzilla quicksearch fetching)
+                  - settled (results loaded; subsumed by the "Showing N" count)
+                Numeric search has its own direct-id loader/not-found chips. */}
+            {(() => {
+              const trimmed = filters.q.trim();
+              const isNumeric = /^\d+$/.test(trimmed);
+              const longEnough = trimmed.length >= 2;
+              if (!isNumeric && longEnough && trimmed !== debouncedQ) {
+                return (
+                  <div className="text-[11px] text-slate-500 mt-0.5 inline-flex items-center gap-1">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Searching Bugzilla for &ldquo;{trimmed}&rdquo;…
+                  </div>
+                );
+              }
+              if (!isNumeric && longEnough && debouncedQ === trimmed && loadingTickets) {
+                return (
+                  <div className="text-[11px] text-slate-500 mt-0.5 inline-flex items-center gap-1">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Searching Bugzilla for &ldquo;{trimmed}&rdquo;…
+                  </div>
+                );
+              }
+              return null;
+            })()}
             {directLookupState === "loading" && (
               <div className="text-[11px] text-slate-500 mt-0.5 inline-flex items-center gap-1">
                 <Loader2 className="w-3 h-3 animate-spin" /> Looking up #{filters.q.trim()}…
@@ -452,6 +536,7 @@ export default function Dashboard() {
               onChange={handleFiltersChange}
               products={products}
               componentOptions={componentsFromLoaded}
+              assigneeOptions={assigneesFromLoaded}
               whoami={whoami}
               bucketActive={bucket !== null}
             />

@@ -35,27 +35,85 @@ export function StatusBadge({ status }: { status: TicketStatus }) {
   return <span className={`badge ${map[status]}`}>{status.replace(/_/g, " ")}</span>;
 }
 
-export function SlaIndicator({ risk, ageDays }: { risk: SlaRisk; ageDays: number }) {
+/** Days until a YYYY-MM-DD date. Positive = future, negative = past, null
+ *  for missing/unparseable input. Matches the server-side helper in
+ *  lib/bugzilla.ts — defined here too so the badge stays a pure render
+ *  component (no extra prop wiring needed). */
+function daysUntilIsoUI(iso: string | undefined): number | null {
+  if (!iso) return null;
+  const t = new Date(iso + "T23:59:59Z").getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.ceil((t - Date.now()) / 86_400_000);
+}
+
+export function SlaIndicator({
+  risk,
+  ageDays,
+  dueDate,
+}: {
+  risk: SlaRisk;
+  ageDays: number;
+  /** Optional Bugzilla `deadline` (YYYY-MM-DD). When present, the badge
+   *  labels the suffix as "Nd overdue" / "due in Nd" so the user
+   *  immediately sees this ticket has an explicit deadline driving the
+   *  SLA. When absent, falls back to the default age-based wording. */
+  dueDate?: string;
+}) {
+  const daysUntilDue = daysUntilIsoUI(dueDate);
+  const driverIsDueDate = daysUntilDue != null;
+
   if (risk === "breach") {
+    const suffix = driverIsDueDate
+      ? `${Math.max(1, -daysUntilDue!)}d overdue`
+      : `${ageDays}d`;
     return (
-      <span className="badge bg-red-600/15 text-red-400 ring-1 ring-red-600/40">
+      <span
+        className="badge bg-red-600/15 text-red-400 ring-1 ring-red-600/40"
+        title={
+          driverIsDueDate
+            ? `Due date ${dueDate} — past`
+            : `Open ${ageDays}d (default SLA — Blocker/Critical breach after 30d)`
+        }
+      >
         <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse-glow" />
-        SLA breach · {ageDays}d
+        SLA breach · {suffix}
       </span>
     );
   }
   if (risk === "warn") {
+    const suffix = driverIsDueDate
+      ? daysUntilDue! === 0
+        ? "due today"
+        : `due in ${daysUntilDue!}d`
+      : `${ageDays}d`;
     return (
-      <span className="badge bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30">
+      <span
+        className="badge bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30"
+        title={
+          driverIsDueDate
+            ? `Due date ${dueDate} — within 5 days`
+            : `Open ${ageDays}d (default SLA — approaching breach threshold)`
+        }
+      >
         <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-        At risk · {ageDays}d
+        At risk · {suffix}
       </span>
     );
   }
+  const suffix = driverIsDueDate
+    ? `due in ${daysUntilDue!}d`
+    : `${ageDays}d`;
   return (
-    <span className="badge bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20">
+    <span
+      className="badge bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20"
+      title={
+        driverIsDueDate
+          ? `Due date ${dueDate} — comfortably ahead`
+          : `Open ${ageDays}d (within default SLA window)`
+      }
+    >
       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-      On track · {ageDays}d
+      On track · {suffix}
     </span>
   );
 }

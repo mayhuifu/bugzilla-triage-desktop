@@ -12,10 +12,59 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
-## v0.2.0 — Subscription-routed providers, vision + PDF triage, formatting overhaul
+## v0.3.0 — Live-Bugzilla assignee search + due-date-driven SLA
 
 **Tagged:** —
 **Published:** —
+
+### Highlights
+
+Two user-facing improvements that target real day-to-day pain points on a busy Bugzilla.
+
+- **Assignee filter → live Bugzilla user search.** The old assignee dropdown only listed engineers whose tickets happened to be in the currently-loaded 25-row page — useless for finding "all tickets owned by Joachim" if his queue isn't in that window. The dashboard now exposes a typeahead control: type ≥ 2 characters, get suggestions from Bugzilla's `/rest/user?match=…` endpoint, click → tickets filter to that assignee's queue across the **entire** Bugzilla (not just the loaded page). Empty + focused still shows the loaded-window assignees as quick presets for one-click filtering on people you're already looking at.
+- **Due-date-driven SLA overrides the default heuristic.** Tickets with a Bugzilla `deadline` field set now drive the SLA badge directly: past → **breach**, ≤ 5 days out → **at risk**, > 5 days out → **on track** (overrides the default severity/age rules — a Critical bug 35 days old but with a customer-agreed deadline 2 months out is no longer wrongly flagged as breach). The badge wording changes too — "SLA breach · 22d overdue" / "At risk · due in 3d" / "On track · due in 14d" — and the tooltip spells out which rule fired so the user can audit.
+
+Plus one quality-of-life add:
+
+- **Assignee filter** (the field itself, added before the search upgrade) now appears in saved filters as `@username`, gets included in the dashboard scope label, and is mutually exclusive with "My Tickets" (the toggle wins precedence-wise and greys out the assignee control).
+
+### Changes
+
+**Live-Bugzilla assignee search**
+
+- `lib/bugzilla.ts` — new `findUsers(match, limit)` wraps `/rest/user?match=…`. Returns `{id, name, realName}` per match. `name` is the Bugzilla login (email); `realName` is the display name shown as the primary line in the typeahead. Payload trimmed via `include_fields` so the proxy only forwards what the UI uses.
+- `lib/bridge.ts` — new `bridgeFindUsers` pass-through.
+- `app/api/users/route.ts` — new proxy endpoint. Short-circuits when `match` < 2 chars (returns `{users: []}`); caps results at 25; degrades gracefully on Bugzilla failures (returns `{users: [], error}` with HTTP 502 instead of a 500 that would crash the typeahead).
+- `components/dashboard/AssigneeFilter.tsx` — new ~210-LoC typeahead. Debounced 300 ms, AbortController-cancelled stale responses, ↑/↓/Enter/Esc keyboard nav, outside-click dismissal, empty-state falls back to the loaded-window assignees. Pasted-full-email + Enter accepted verbatim without a round-trip.
+- `components/dashboard/TicketFilters.tsx` — replaced the assignee `<select>` with `<AssigneeFilter>`. `state.assignee` (full email) wiring unchanged from the previous step.
+
+**Due-date-driven SLA**
+
+- `lib/types.ts` — `TicketSummary` gains `dueDate?: string` (YYYY-MM-DD).
+- `lib/bugzilla.ts` — new helper `daysUntilIso(iso)` (positive future, negative past; treats the date as end-of-day UTC). `computeSla()` rewritten with new precedence: closed → ok → due_date override → default age heuristic. `SUMMARY_FIELDS` includes `deadline`. `normalizeSummary` carries `dueDate` through.
+- `components/ui/Badge.tsx` — `SlaIndicator` accepts `dueDate?: string`. When set, the suffix becomes `"Nd overdue"` (breach) / `"due in Nd"` (warn/ok) / `"due today"` (warn at 0 days). Tooltip explains which rule fired.
+- `components/dashboard/TicketTable.tsx` + `components/detail/TicketDetailHeader.tsx` — both `<SlaIndicator>` callsites now pass `dueDate={t.dueDate}`.
+- `lib/mock-data.ts` — mock `risk()` mirrors the new precedence; demo path stays consistent with live data.
+
+**Assignee filter (prerequisite for the search)**
+
+- `components/dashboard/TicketFilters.tsx` + `FilterState` — added `assignee: string`.
+- `app/page.tsx` — `INITIAL_FILTERS` extended; `assigneesFromLoaded` memo computes the typeahead's recent-suggestions list; `serverQuery` sets `?assignee=` from the dropdown when My Tickets is off (precedence: My Tickets > assignee field). Scope label appends `@username`.
+- `components/dashboard/SavedFilters.tsx` — `describeFilter` now includes `@username` for saved filters with an assignee set (skipped when My Tickets is on).
+
+### Upgrade notes
+
+- **No schema migration.** `TicketSummary.dueDate` and `FilterState.assignee` are optional / default-empty; the saved-filter localStorage shape is forward-compatible — older entries without these fields load fine.
+- **Bugzilla `deadline` field must be set** on a ticket for the override to trigger; tickets without a deadline keep the existing severity/age-based SLA.
+- **Closed tickets with a past deadline still show `ok`** — the closed-status check takes precedence over the deadline check, matching "no SLA on closed work". If you want post-mortem SLA reporting (tickets resolved AFTER their deadline flagged for retrospective metrics) that's a separate feature; raise a ticket.
+- **Bugzilla user-search permissions vary by install.** The user-search endpoint (`/rest/user`) requires `creategroups` or `editusers` privilege on some Bugzilla deployments, but most installs allow any authenticated user to call it. If you see "Search failed" in the typeahead, your account may lack the permission — check with your Bugzilla admin.
+
+---
+
+## v0.2.0 — Subscription-routed providers, vision + PDF triage, formatting overhaul
+
+**Tagged:** 2026-05-21
+**Published:** 2026-05-21
 
 ### Highlights
 

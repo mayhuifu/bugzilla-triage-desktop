@@ -189,8 +189,58 @@ function daysBetween(iso: string): number {
 
 const _CLOSED_SET = new Set<string>(CLOSED_STATUSES);
 
-function computeSla(severity: string, status: string, ageDays: number, daysSinceUpdate: number): "ok" | "warn" | "breach" {
+/** Days until the given YYYY-MM-DD date. Positive = future, negative = past.
+ *  Returns null when the input is empty or unparseable. Treats the date as
+ *  end-of-day UTC so a deadline of "2026-05-22" counts as "still on track"
+ *  for the whole calendar day, only flipping to breach the moment May 23
+ *  starts (UTC). */
+export function daysUntilIso(iso: string): number | null {
+  if (!iso) return null;
+  const t = new Date(iso + "T23:59:59Z").getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.ceil((t - Date.now()) / 86_400_000);
+}
+
+/** Compute the SLA risk band.
+ *
+ *  Precedence:
+ *    1. Closed tickets → always "ok" (no SLA on closed work).
+ *    2. Explicit due_date (Bugzilla `deadline` field) — if set, IT drives
+ *       the result and the default age-based logic is bypassed:
+ *         - due in the past         → "breach"
+ *         - due in ≤ 5 days         → "warn"   ("at risk")
+ *         - due in > 5 days         → "ok"     (override the default —
+ *                                                a customer set a deadline,
+ *                                                trust it over the
+ *                                                severity/age heuristic)
+ *    3. No due_date → fall back to the historical default:
+ *         - Blocker/Critical: > 30d old or > 14d since update → breach
+ *         - Blocker/Critical: > 14d old or >  7d since update → warn
+ *         - Anything: > 90d old or > 30d since update         → warn
+ *         - Otherwise                                          → ok
+ *
+ *  Rationale for rule 2 fully overriding: users who set an explicit
+ *  deadline are signalling "this is the real SLA" — the default
+ *  heuristic shouldn't shout "breach" at a 35-day-old Critical bug
+ *  that has a customer-agreed deadline two months out. */
+function computeSla(
+  severity: string,
+  status: string,
+  ageDays: number,
+  daysSinceUpdate: number,
+  dueDate?: string,
+): "ok" | "warn" | "breach" {
   if (_CLOSED_SET.has(status)) return "ok";
+
+  if (dueDate) {
+    const daysUntil = daysUntilIso(dueDate);
+    if (daysUntil != null) {
+      if (daysUntil < 0) return "breach";
+      if (daysUntil <= 5) return "warn";
+      return "ok";
+    }
+  }
+
   const high = severity === "Blocker" || severity === "Critical";
   if (high && (ageDays > 30 || daysSinceUpdate > 14)) return "breach";
   if (high && (ageDays > 14 || daysSinceUpdate > 7)) return "warn";
@@ -208,6 +258,10 @@ function normalizeSummary(raw: RawBug): TicketSummary {
   const updDays = daysBetween(s(raw.last_change_time));
   const severity = s(raw.severity, "Normal") as Severity;
   const status = s(raw.status, "NEW") as TicketStatus;
+  // Bugzilla's REST API serializes the due-date field as `deadline` —
+  // a YYYY-MM-DD string when set, missing or empty when not. Coerce to
+  // undefined for the un-set case so the JSON payload stays minimal.
+  const dueDate = s(raw.deadline) || undefined;
   // TicketSummary uses `?: string` (undefined-when-absent) — coerce empty
   // values to undefined rather than null so the JSON shape stays minimal.
   return {
@@ -226,7 +280,8 @@ function normalizeSummary(raw: RawBug): TicketSummary {
     lastChangeTime: s(raw.last_change_time),
     ageDays,
     daysSinceUpdate: updDays,
-    slaRisk: computeSla(severity, status, ageDays, updDays),
+    slaRisk: computeSla(severity, status, ageDays, updDays, dueDate),
+    dueDate,
     label: s(raw.cf_label) || undefined,
     keywords: Array.isArray(raw.keywords) ? (raw.keywords as string[]) : undefined,
   };
@@ -234,7 +289,11 @@ function normalizeSummary(raw: RawBug): TicketSummary {
 
 const SUMMARY_FIELDS =
   "id,summary,status,resolution,product,component,priority,severity," +
-  "assigned_to,creator,creation_time,last_change_time,keywords,cf_label,cf_customer";
+  "assigned_to,creator,creation_time,last_change_time,keywords,cf_label,cf_customer," +
+  // `deadline` is Bugzilla's standard due-date field (YYYY-MM-DD when set,
+  // empty otherwise). Pulled at summary level so the SLA chip on every
+  // dashboard row can prefer due-date over the default age heuristic.
+  "deadline";
 
 // ── search ────────────────────────────────────────────────────────
 
@@ -499,6 +558,56 @@ export async function whoami(): Promise<WhoAmI> {
     }
     return { login: cfg.login, realName: "", id: null, source: "env-fallback" };
   }
+}
+
+// ── user search (typeahead for assignee filter) ──────────────────
+//
+// Wraps Bugzilla's `/rest/user?match=<x>` endpoint, which searches the
+// `real_name` and email (Bugzilla's `name` field IS the email login)
+// for a case-insensitive substring match. Used by the assignee-search
+// typeahead in the dashboard's filter row — lets the user pick ANY
+// engineer on the Bugzilla, not just those visible in the currently-
+// loaded 25-row page.
+//
+// Limits: Bugzilla's `match` requires the search term to be at least 3
+// chars OR an exact email; for shorter inputs we skip the round-trip
+// upstream. The result is capped to keep the dropdown manageable —
+// the user is expected to keep typing if their hit is past the cap.
+
+export interface BugzillaUser {
+  /** Bugzilla user-id (numeric, stable). Not currently used downstream
+   *  — kept on the wire so future per-user lookups don't need a
+   *  re-search to find it. */
+  id: number;
+  /** Login / email — what gets sent as the `assignee` param. Bugzilla
+   *  REST exposes this as the `name` field. */
+  name: string;
+  /** Display name ("Joachim Wehinger"). Rendered as the primary line in
+   *  the typeahead row, with the email shown underneath. May be empty
+   *  for users who never set their real name. */
+  realName: string;
+}
+
+export async function findUsers(match: string, limit = 20): Promise<{ users: BugzillaUser[] }> {
+  const trimmed = match.trim();
+  if (!trimmed) return { users: [] };
+  const params: Params = [
+    ["match", trimmed],
+    ["limit", String(limit)],
+    // Tighten the payload — these are all the fields the typeahead needs.
+    ["include_fields", "id,name,real_name"],
+  ];
+  const data = await bzGet("/rest/user", params) as {
+    users?: Array<{ id?: number; name?: string; real_name?: string }>;
+  };
+  const raw = data.users ?? [];
+  return {
+    users: raw.map(u => ({
+      id: u.id ?? 0,
+      name: u.name ?? "",
+      realName: u.real_name ?? "",
+    })),
+  };
 }
 
 // ── stats (14 parallel queries) ───────────────────────────────────

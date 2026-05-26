@@ -133,7 +133,7 @@ export function TicketTable({
                 <td className="px-4 py-3"><SeverityBadge severity={t.severity} /></td>
                 <td className="px-4 py-3"><StatusBadge status={t.status} /></td>
                 <td className="px-4 py-3 text-slate-400">{t.assignee.split("@")[0]}</td>
-                <td className="px-4 py-3"><SlaIndicator risk={t.slaRisk} ageDays={t.ageDays} /></td>
+                <td className="px-4 py-3"><SlaIndicator risk={t.slaRisk} ageDays={t.ageDays} dueDate={t.dueDate} /></td>
                 <td className="px-4 py-3">
                   <div className="flex items-center justify-end gap-1.5">
                     <Link

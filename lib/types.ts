@@ -35,6 +35,13 @@ export interface TicketSummary {
   ageDays: number;
   daysSinceUpdate: number;
   slaRisk: SlaRisk;
+  /** Bugzilla's `deadline` field — YYYY-MM-DD when the bug has an explicit
+   *  due date, undefined otherwise. When set, this overrides the
+   *  default age-based SLA: past = breach, ≤ 5 days out = warn,
+   *  > 5 days out = ok. Carried in TicketSummary so the SLA badge can
+   *  display "N days overdue" / "due in N days" instead of the default
+   *  age-based wording. See lib/bugzilla.ts → computeSla. */
+  dueDate?: string;
   label?: string;
   keywords?: string[];
 }

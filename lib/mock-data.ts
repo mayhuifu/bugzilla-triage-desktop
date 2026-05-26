@@ -17,7 +17,32 @@ function iso(daysAgo: number, hour = 9): string {
 }
 
 function ageDays(daysAgo: number) { return daysAgo; }
-function risk(sev: Severity, ageD: number, updD: number): "ok" | "warn" | "breach" {
+
+/** Mirror of lib/bugzilla.ts → daysUntilIso. Kept inline here so the
+ *  mock path doesn't pull in server-only Bugzilla code. */
+function daysUntilIso(iso: string | undefined): number | null {
+  if (!iso) return null;
+  const t = new Date(iso + "T23:59:59Z").getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.ceil((t - Date.now()) / 86_400_000);
+}
+
+/** Mirror of lib/bugzilla.ts → computeSla. Due-date override takes
+ *  precedence over the default severity/age heuristic. */
+function risk(
+  sev: Severity,
+  ageD: number,
+  updD: number,
+  dueDate?: string,
+): "ok" | "warn" | "breach" {
+  if (dueDate) {
+    const daysUntil = daysUntilIso(dueDate);
+    if (daysUntil != null) {
+      if (daysUntil < 0) return "breach";
+      if (daysUntil <= 5) return "warn";
+      return "ok";
+    }
+  }
   const high = sev === "Blocker" || sev === "Critical";
   if (high && (ageD > 30 || updD > 14)) return "breach";
   if (high && (ageD > 14 || updD > 7)) return "warn";
@@ -52,7 +77,8 @@ function makeSummary(
     lastChangeTime: iso(updD, 14),
     ageDays: ageDays(ageD),
     daysSinceUpdate: updD,
-    slaRisk: risk(severity, ageD, updD),
+    slaRisk: risk(severity, ageD, updD, opts.dueDate),
+    dueDate: opts.dueDate,
     customer: opts.customer,
     label: opts.label,
     keywords: opts.keywords,

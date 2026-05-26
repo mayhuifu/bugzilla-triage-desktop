@@ -18,7 +18,7 @@ export function TicketDetailHeader({ ticket }: { ticket: TicketDetail }) {
             <div className="font-mono text-slate-500 text-sm">#{ticket.id}</div>
             <SeverityBadge severity={ticket.severity} />
             <StatusBadge status={ticket.status} />
-            <SlaIndicator risk={ticket.slaRisk} ageDays={ticket.ageDays} />
+            <SlaIndicator risk={ticket.slaRisk} ageDays={ticket.ageDays} dueDate={ticket.dueDate} />
             {ticket.label && (
               <span className="badge bg-fuchsia-500/10 text-fuchsia-300 ring-1 ring-fuchsia-500/30">
                 <Tag className="w-3 h-3" />

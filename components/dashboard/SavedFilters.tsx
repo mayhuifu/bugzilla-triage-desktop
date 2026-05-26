@@ -120,6 +120,12 @@ function describeFilter(it: SavedFilter): string {
   if (it.filters.product) parts.push(it.filters.product);
   if (it.filters.component) parts.push(it.filters.component);
   if (it.filters.myTickets) parts.push("My Tickets");
+  // Show assignee (when not overridden by My Tickets) as `@username`.
+  // Falsy-guard handles saved filters from before the assignee field
+  // existed — those serialize without the property and we just skip it.
+  if (it.filters.assignee && !it.filters.myTickets) {
+    parts.push(`@${it.filters.assignee.split("@")[0]}`);
+  }
   if (it.bucket) parts.push(BUCKET_LABELS[it.bucket]);
   if (it.filters.severity) parts.push(it.filters.severity);
   if (it.filters.status) parts.push(it.filters.status);
