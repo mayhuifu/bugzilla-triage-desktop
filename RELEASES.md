@@ -14,8 +14,8 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ## v0.3.0 — Live-Bugzilla assignee search + due-date-driven SLA
 
-**Tagged:** —
-**Published:** —
+**Tagged:** 2026-05-26
+**Published:** 2026-05-29 (first CI attempt 2026-05-26 hit a transient GitHub Actions billing glitch that returned an "account suspended" error; rerun on 2026-05-29 cleared cleanly and shipped all three installers)
 
 ### Highlights
 
