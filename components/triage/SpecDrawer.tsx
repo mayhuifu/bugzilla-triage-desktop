@@ -38,6 +38,17 @@ interface ClauseTableData {
 interface ClauseFigureData {
   id: string;
   caption: string;
+  /** Source media filename inside the corpus build — populated only on
+   *  v3 corpora (rel17-v4+). When present AND the matching
+   *  ClauseFigureImage entry exists, the drawer renders an inline
+   *  `<img>`. */
+  mediaFilename?: string;
+}
+
+interface ClauseFigureImage {
+  figureId: string;
+  mimeType: string;
+  bytes: number;
 }
 
 interface ClauseResponse {
@@ -48,6 +59,9 @@ interface ClauseResponse {
   text: string;
   tables?: ClauseTableData[];
   figures?: ClauseFigureData[];
+  /** v3-only — figure-image metadata. Empty on v1/v2 corpora. Each
+   *  entry's `figureId` matches a ClauseFigureData.id in `figures`. */
+  figureImages?: ClauseFigureImage[];
   matchedAs?: "exact" | "ancestor";
   /** When matchedAs === "ancestor", the original (parent / non-leaf)
    *  id the user clicked. The drawer shows a hint so it's obvious the
@@ -288,13 +302,57 @@ function ClauseBody({ clause }: { clause: ClauseResponse }) {
           </div>
         ))}
         {(clause.figures?.length ?? 0) > 0 && (
-          <div className="text-[11px] text-slate-500 italic space-y-0.5 pt-2 border-t border-bg-border/30">
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 not-italic mb-0.5">
-              Figures referenced
+          <div className="space-y-3 pt-2 border-t border-bg-border/30">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">
+              Figures
             </div>
-            {clause.figures!.map((f, i) => (
-              <div key={f.id || i}>{f.id.split("/").pop()}{f.caption ? `: ${f.caption}` : ""}</div>
-            ))}
+            {clause.figures!.map((f, i) => {
+              // Pair the caption with the v3 image-blob entry. The
+              // figure_id used in the API URL matches the figure's
+              // `id` field exactly (composite of clauseId + Figure-N).
+              const hasImage = (clause.figureImages ?? []).some(img => img.figureId === f.id);
+              const captionShort = f.id.split("/").pop();
+              return (
+                <figure
+                  key={f.id || i}
+                  className="bg-bg-panel/40 rounded-md border border-bg-border/40 overflow-hidden"
+                >
+                  {hasImage && (
+                    // eslint-disable-next-line @next/next/no-img-element --
+                    // proxy URL pattern with dynamic clauseId/figureId;
+                    // next/image can't precompute these. The native
+                    // <img> handles SVG/PNG/JPEG uniformly and the
+                    // browser respects our private cache header.
+                    <img
+                      src={
+                        `/api/corpus/figure?clauseId=${encodeURIComponent(clause.clauseId)}` +
+                        `&figureId=${encodeURIComponent(f.id)}`
+                      }
+                      alt={f.caption || captionShort || "figure"}
+                      className="w-full max-h-[480px] object-contain bg-white/95 p-2"
+                      loading="lazy"
+                      onError={e => {
+                        // 404 from the route (figure not in corpus, or
+                        // file pruned mid-session). Hide the broken
+                        // image; the caption row below still renders.
+                        (e.currentTarget as HTMLImageElement).style.display = "none";
+                      }}
+                    />
+                  )}
+                  <figcaption className="px-2 py-1.5 text-[11px] text-slate-400 italic border-t border-bg-border/30 bg-bg-panel/80">
+                    <span className="font-mono not-italic text-slate-300">
+                      {captionShort}
+                    </span>
+                    {f.caption && <span>: {f.caption}</span>}
+                    {!hasImage && (
+                      <span className="ml-2 text-slate-600 not-italic">
+                        (caption only — image not in corpus)
+                      </span>
+                    )}
+                  </figcaption>
+                </figure>
+              );
+            })}
           </div>
         )}
       </div>

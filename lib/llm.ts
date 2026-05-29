@@ -37,7 +37,7 @@ import { randomBytes } from "node:crypto";
 import type { TicketDetail, TriageResult, SpecExcerpt } from "./types";
 import { loadSettings, type LlmProvider } from "./settings";
 import { lookupClause, corpusHasSpec, type RetrievedClause } from "./corpus/retriever";
-import { getCorpusDb } from "./corpus/store";
+import { getCorpusDb, getFigureImageBlob } from "./corpus/store";
 import { attachments as fetchAttachments } from "./bugzilla";
 
 /** Classify why a lookupClause() call returned null. The UI uses this to
@@ -342,6 +342,56 @@ async function loadImageAttachments(ticket: TicketDetail): Promise<InlineImage[]
     console.warn(`[triage] image attachment fetch failed (continuing without vision):`, err);
     return [];
   }
+}
+
+// Per-triage cap on the number of corpus figure images injected as
+// vision content blocks. Four retrieved clauses × ~3 figures each
+// would already be 12 images; we cap at 6 to leave headroom for the
+// ticket attachments and to keep token cost predictable on a long
+// triage prompt.
+const MAX_CORPUS_FIGURE_IMAGES = 6;
+
+/** Walk the retrieved clauses, pull rasterizable figure blobs out of
+ *  the corpus, and return them as `InlineImage[]` ready to inject
+ *  alongside ticket attachments. SVG figures are intentionally
+ *  skipped: neither the Anthropic nor OpenAI vision endpoints accept
+ *  SVG natively, and rasterising server-side adds a heavy dep we
+ *  haven't budgeted. The SpecDrawer still renders SVGs in the UI
+ *  (browser does it natively) — the LLM just doesn't see them. */
+function loadCorpusFigureImages(
+  retrievedClauses: RetrievedClause[],
+): InlineImage[] {
+  const out: InlineImage[] = [];
+  if (!getCorpusDb()) return out;     // corpus not installed → no figures
+  for (const c of retrievedClauses) {
+    if (!c.figureImages?.length) continue;
+    for (const meta of c.figureImages) {
+      if (out.length >= MAX_CORPUS_FIGURE_IMAGES) return out;
+      // Only ingest formats the vision endpoints accept. SVG and any
+      // unknown MIME falls through to the SpecDrawer-only path.
+      const accepted: Record<string, InlineImage["mediaType"]> = {
+        "image/png": "image/png",
+        "image/jpeg": "image/jpeg",
+        "image/jpg": "image/jpeg",
+        "image/gif": "image/gif",
+        "image/webp": "image/webp",
+      };
+      const mt = accepted[meta.mimeType.toLowerCase()];
+      if (!mt) continue;
+      const blob = getFigureImageBlob(c.clauseId, meta.figureId);
+      if (!blob) continue;
+      const base64 = blob.data.toString("base64");
+      out.push({
+        // Synthesise a filename so the prompt manifest can reference it.
+        // The figureId is composite ("38.331#5.3.5.1/Figure-5.3.5-1");
+        // shortening to just the figure label keeps the manifest tidy.
+        fileName: `${c.citation} ${meta.figureId.split("/").pop() ?? meta.figureId}`,
+        mediaType: mt,
+        base64,
+      });
+    }
+  }
+  return out;
 }
 
 // ── Output schema (matches lib/types.ts TriageResult) ────────────
@@ -665,9 +715,27 @@ export async function runTriage(
   // the provider-specific dispatch. Skipped entirely for DeepSeek / any
   // model we don't recognise as vision-capable — saves the second
   // Bugzilla REST call and the bandwidth.
-  const images = providerSupportsVision(s.llmProvider, model)
-    ? await loadImageAttachments(ticket)
+  const visionSupported = providerSupportsVision(s.llmProvider, model);
+  const ticketImages = visionSupported ? await loadImageAttachments(ticket) : [];
+
+  // Corpus-figure vision (v3 / Phase 2): when the retrieval surfaced
+  // clauses with paired figure images and the provider is vision-capable,
+  // attach the raster blobs (PNG/JPEG/GIF) as vision content blocks
+  // too. SVG blobs are skipped — neither the Anthropic nor OpenAI
+  // vision endpoints accept SVG natively, and rasterising server-side
+  // is a heavier follow-up. The SpecDrawer still renders SVGs in the
+  // UI (browser does it natively). Capped at MAX_CORPUS_FIGURE_IMAGES
+  // total per triage to keep token cost bounded on a 4-clause
+  // retrieved-context set.
+  const corpusFigureImages = visionSupported && opts.retrievedClauses
+    ? loadCorpusFigureImages(opts.retrievedClauses)
     : [];
+
+  // Combine: ticket attachments first (most directly relevant —
+  // they're FROM this ticket), then corpus figures (background spec
+  // diagrams). Manifest-text injection in the user prompt names them
+  // separately so the model knows which images came from which source.
+  const images = [...ticketImages, ...corpusFigureImages];
 
   // PDFs: every provider gets PDFs in some form. Anthropic gets native
   // document blocks (best fidelity); everyone else (OpenAI-compatible

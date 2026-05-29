@@ -23,7 +23,7 @@
 
 import "server-only";
 import type { TicketDetail } from "../types";
-import { corpusHasVectors, getCorpusDb } from "./store";
+import { corpusHasVectors, getCorpusDb, getFigureImagesForClause } from "./store";
 import { expandAcronyms } from "./acronyms";
 import { getCorpusEmbedder } from "./embedder";
 
@@ -41,6 +41,26 @@ export interface ClauseTable {
 export interface ClauseFigure {
   id: string;
   caption: string;
+  /** Source media filename inside the build (Phase 1 / schemaVersion=3
+   *  only). When present and the corpus carries the `figure_images`
+   *  table, the desktop renders the image inline in the SpecDrawer
+   *  via `/api/corpus/figure?clauseId=…&figureId=…`. Older corpora
+   *  (v1/v2) don't populate this field — figures still show their
+   *  captions, just no image. */
+  mediaFilename?: string;
+}
+
+/** Lightweight figure-image metadata attached to a lookupClause result
+ *  when the corpus has the v3 `figure_images` table populated. The
+ *  blob itself is NOT inlined — clients fetch it via the
+ *  `/api/corpus/figure?…` endpoint to keep JSON responses lean. */
+export interface ClauseFigureImage {
+  /** Composite identifier used as the URL fragment to fetch the blob.
+   *  Matches the `figure_images.figure_id` column in the SQLite. */
+  figureId: string;
+  /** Canonical IANA MIME type: image/svg+xml | image/png | image/jpeg | image/gif. */
+  mimeType: string;
+  bytes: number;
 }
 
 export interface RetrievedClause {
@@ -56,6 +76,12 @@ export interface RetrievedClause {
   tables?: ClauseTable[];
   /** Figure references (v2 only). */
   figures?: ClauseFigure[];
+  /** Figure images stored in the v3 `figure_images` table — one entry
+   *  per renderable image attached to the clause. Empty array on
+   *  v1/v2 corpora (or v3 corpora where the clause has no images).
+   *  Blob bytes are NOT inlined here; clients fetch via the
+   *  `/api/corpus/figure?…` endpoint. */
+  figureImages?: ClauseFigureImage[];
   /** Whether the lookup hit the exact cited clause id, or fell back to
    *  the closest descendant leaf because the cited id was a non-leaf
    *  parent section. UI shows a hint when "ancestor". */
@@ -393,6 +419,14 @@ export function lookupClause(reference: string): RetrievedClause | null {
     }
     if (!row) return null;
     const v2row = hasV2Cols ? (row as V2Row) : null;
+    // v3 figure images — listed cheaply (metadata-only, no blobs in JSON
+    // response). Returns [] silently for v1/v2 corpora and for clauses
+    // whose figures didn't pair with any media file during parse.
+    const figureImages = getFigureImagesForClause(row.id).map(m => ({
+      figureId: m.figureId,
+      mimeType: m.mimeType,
+      bytes: m.bytes,
+    }));
     return {
       clauseId: row.id,
       citation: row.citation,
@@ -401,6 +435,7 @@ export function lookupClause(reference: string): RetrievedClause | null {
       text: row.text,
       tables: v2row ? safeJsonArray<ClauseTable>(v2row.tables_json) : [],
       figures: v2row ? safeJsonArray<ClauseFigure>(v2row.figures_json) : [],
+      figureImages,
       matchedAs,
       requestedClauseId: matchedAs === "ancestor" ? id : undefined,
     };
