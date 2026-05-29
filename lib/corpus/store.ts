@@ -101,6 +101,81 @@ export function corpusPath(): string {
   return path.join(appDataDir(), "corpus", "corpus.sqlite");
 }
 
+/** True when the open corpus has the v3 `figure_images` table
+ *  populated (introduced in corpus rel17-v4 / schemaVersion=3). False
+ *  for v1/v2 corpora (no table) and for v3 corpora where the table
+ *  exists but is empty. Probed once per process. */
+let _hasFigureImages: boolean | null = null;
+export function corpusHasFigureImages(): boolean {
+  if (_db === null) return false;
+  if (_hasFigureImages !== null) return _hasFigureImages;
+  try {
+    // SQLite-typed query: master row presence + at least one image.
+    const tablePresent = _db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='figure_images'",
+    ).get();
+    if (!tablePresent) { _hasFigureImages = false; return false; }
+    const anyRow = _db.prepare("SELECT 1 FROM figure_images LIMIT 1").get();
+    _hasFigureImages = !!anyRow;
+  } catch {
+    _hasFigureImages = false;
+  }
+  return _hasFigureImages;
+}
+
+/** Metadata about a single figure image stored alongside a clause.
+ *  Carries everything the UI needs to render an `<img>` (mime + size)
+ *  without forcing the caller to load the blob just to enumerate. */
+export interface FigureImageMeta {
+  clauseId: string;
+  figureId: string;
+  mimeType: string;
+  bytes: number;
+}
+
+/** List the figure-image metadata rows for a clause id. Returns [] when
+ *  the corpus is missing the table (v1/v2) or has no images for the
+ *  clause. The blob itself is fetched separately via getFigureImageBlob
+ *  so listing a clause's figures stays cheap and the API/JSON shape
+ *  doesn't balloon with base64. */
+export function getFigureImagesForClause(clauseId: string): FigureImageMeta[] {
+  const db = getCorpusDb();
+  if (!db || !corpusHasFigureImages()) return [];
+  try {
+    return db.prepare(`
+      SELECT clause_id AS clauseId, figure_id AS figureId,
+             mime_type AS mimeType, bytes
+      FROM figure_images
+      WHERE clause_id = ?
+      ORDER BY figure_id
+    `).all(clauseId) as FigureImageMeta[];
+  } catch {
+    return [];
+  }
+}
+
+/** Load the raw bytes of a single figure image. Returns null when the
+ *  (clauseId, figureId) pair doesn't exist OR the corpus is too old
+ *  to have the table. The caller is responsible for setting the right
+ *  Content-Type via the metadata row above. */
+export function getFigureImageBlob(
+  clauseId: string,
+  figureId: string,
+): { mimeType: string; data: Buffer } | null {
+  const db = getCorpusDb();
+  if (!db || !corpusHasFigureImages()) return null;
+  try {
+    const row = db.prepare(`
+      SELECT mime_type AS mimeType, data
+      FROM figure_images
+      WHERE clause_id = ? AND figure_id = ?
+    `).get(clauseId, figureId) as { mimeType: string; data: Buffer } | undefined;
+    return row ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Lazily open the corpus DB. Returns null when the file is absent,
  *  so callers can decide whether to skip retrieval or surface the
  *  fact in the UI (e.g. a "download corpus" banner). */

@@ -54,9 +54,12 @@ export interface CorpusManifest {
 
 // Corpus v1 ships pure FTS5 BM25. v2 adds sqlite-vec dense vectors +
 // hierarchy in FTS5 + acronyms + eval_queries (corpus repo SPEC.md §14).
-// This client supports both — the retriever degrades gracefully to BM25
-// when reading a v2 corpus on a host with no embedder configured.
-const SUPPORTED_SCHEMA_VERSIONS = new Set([1, 2]);
+// v3 adds the figure_images table carrying inline SVG/PNG/JPEG bytes for
+// every captioned figure (corpus repo SPEC.md ADR-009). The bump is
+// additive — v3 corpora work fine on v2 clients (the new table is just
+// ignored), and v2 corpora work fine on this v3-aware client (the
+// SpecDrawer just doesn't render figures, same as before).
+const SUPPORTED_SCHEMA_VERSIONS = new Set([1, 2, 3]);
 
 function localManifestPath(): string {
   return path.join(appDataDir(), "corpus", "manifest.json");

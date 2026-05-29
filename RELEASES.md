@@ -12,6 +12,49 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.4.0 — Inline 3GPP figure rendering + LLM vision over corpus diagrams
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+The 3GPP corpus shipped its **rel17-v4** SQLite this week — same 12,930 leaf clauses + structured tables, plus a brand-new `figure_images` table carrying inline SVG/PNG/JPEG bytes of every captioned figure (1,128 images, 66 MB raw / 68 MB gzipped). This release teaches the desktop how to consume it.
+
+- **Spec drawer renders figures inline.** Click `View clause` on any 3GPP citation and the drawer now shows the actual signal-flow diagrams, resource grids, timing pictures alongside the clause text. SVG figures render natively via the browser, sharp at any zoom. PNG/JPEG figures (mostly in 36.300 architecture diagrams + RF test plots) also render inline. The old "Figures referenced" caption-only fallback now only fires for clauses whose figures didn't pair with a media file during parse.
+- **LLM vision content blocks for corpus diagrams.** When AI Triage retrieves spec context AND the chosen provider/model supports vision (Anthropic, GPT-4o, Codex CLI, etc.), the retrieved clauses' raster figure images (PNG/JPEG/GIF) are attached to the user message as image content blocks. The model can now actually look at a referenced spec diagram instead of relying on text-only clause-body context. SVG figures are skipped for vision (neither Anthropic nor OpenAI accept SVG natively, and server-side rasterising is a heavier follow-up) — they still render in the drawer. Hard cap at 6 corpus images per triage to keep token cost bounded.
+- **Default corpus URL → rel17-v4.** Users who installed the rel17-v3 default (or v1/v2) auto-upgrade silently on next launch. Users with a custom mirror keep their URL untouched.
+
+### Changes
+
+**Corpus client**
+
+- `lib/corpus/manifest.ts` — `SUPPORTED_SCHEMA_VERSIONS` extended to accept v3 corpora alongside v1/v2.
+- `lib/corpus/store.ts` — new `corpusHasFigureImages()` (probe-once-per-process), `getFigureImagesForClause(clauseId)` (lightweight metadata-only enumeration), and `getFigureImageBlob(clauseId, figureId)` (single-blob fetch). All three degrade silently to "no images" on v1/v2 corpora.
+- `lib/corpus/retriever.ts` — `RetrievedClause` gains a new optional `figureImages` field; `lookupClause()` populates it with `{figureId, mimeType, bytes}` metadata (no blobs inlined; blobs fetched on demand). `ClauseFigure` gains a `mediaFilename` field for the v3 schema. Backward-compatible: v1/v2 corpora return empty `figureImages: []`.
+- `lib/settings.ts` — `DEFAULT_CORPUS_MANIFEST_URL` flipped from `rel17-v3` → `rel17-v4`; v3 URL added to `LEGACY_DEFAULT_CORPUS_MANIFEST_URLS` for auto-upgrade.
+
+**Image streaming**
+
+- `app/api/corpus/figure/route.ts` (new) — `GET /api/corpus/figure?clauseId=…&figureId=…` streams the raw blob bytes with the correct Content-Type and a 1-hour private cache (the corpus SQLite is immutable for a given installed version). 404 cleanly on missing.
+
+**UI**
+
+- `components/triage/SpecDrawer.tsx` — replaced the small "Figures referenced" caption list with a proper figure grid. Each figure renders as an `<img>` (when the corpus has an associated blob) with `figcaption` below carrying the figure id + caption. Onload-error fallback hides broken images so a corrupted blob doesn't break the panel layout. Max height capped at 480 px to keep long figure stacks from dominating the drawer.
+
+**LLM vision**
+
+- `lib/llm.ts` — new `loadCorpusFigureImages(retrievedClauses)` walks the retrieved-context array, pulls PNG/JPEG/GIF/WebP blobs out of the corpus, returns them as `InlineImage[]`. SVG and unknown MIME types are skipped (vision endpoints don't accept SVG natively). The result is concatenated with ticket-attachment images and threaded through the existing multimodal content-block plumbing on both the Anthropic and OpenAI-compatible paths. Hard cap at `MAX_CORPUS_FIGURE_IMAGES = 6` per triage.
+
+### Upgrade notes
+
+- **No schema migration.** Existing settings.json files load unchanged; the `LEGACY_DEFAULT_CORPUS_MANIFEST_URLS` set covers all previously-shipped defaults. Users with custom mirrors keep their URL.
+- **First launch after upgrade auto-fetches the v4 corpus** (~68 MB gzipped, 226 MB on disk after decompression). The download is gated by the CorpusInstallBanner; users who chose not to install a corpus stay text-only.
+- **Vision cost goes up slightly when triaging cellular tickets** because retrieved spec diagrams are now sent to the model. On Anthropic Sonnet this is ~$0.005–0.02 per image × up to 6 images per triage ≈ 1–10 ¢ extra. Set `MAX_CORPUS_FIGURE_IMAGES = 0` in `lib/llm.ts` if you want to suppress entirely.
+- **SVG vision is deferred.** Most 3GPP figures are SVG (921 of 1,128) and the LLM doesn't see those today. The SpecDrawer still renders them so a human reviewing the triage can click `View clause` and look at the diagram themselves. Server-side SVG-to-PNG rasterising for vision is a follow-up.
+
+---
+
 ## v0.3.0 — Live-Bugzilla assignee search + due-date-driven SLA
 
 **Tagged:** 2026-05-26
