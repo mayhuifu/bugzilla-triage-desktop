@@ -12,6 +12,32 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.4.1 — SpecDrawer polish: resizable width + readable NOTE rows
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+Three small but high-value polish fixes to the spec-clause drawer that landed in v0.4.0. All are pure renderer changes — no schema, API, or LLM behaviour change — so this is a clean patch over v0.4.0 and the v4 corpus.
+
+- **Drawer is now user-resizable.** Drag the left edge of the SpecDrawer to widen it for wide tables / large figures, or narrow it to keep more of the underlying triage panel visible. Width persists per-user via localStorage, so the choice survives reloads and re-opens. Min 360 px, max viewport-width minus 80 px gutter, default 672 px (matches v0.4.0's fixed width). A subtle accent stripe appears on hover so the grab zone is discoverable.
+- **NOTE rows in clause tables span all columns.** Before: 3GPP NOTE rows like `["NOTE 1: UE that complies…", "", ""]` got their prose crammed into whatever the first column's width was (typically narrow, e.g. for band-name "n95 8"), wrapping at every other word. After: NOTE rows render as a single `<td colSpan={maxCols}>` cell so the prose flows naturally across the full table width. Italic + slightly lighter background distinguishes them from data rows at a glance.
+- **Multi-note NOTE cells split per note with hanging indent.** Many spec tables pack multiple notes ("NOTE 1: … NOTE 2: … NOTE 3: …") into a single source cell separated only by spaces. v0.4.1's renderer detects the pattern (case-tolerant `\bNOTE\s+\d+\s*[:.]` lookahead) and breaks each note into its own paragraph with a hanging indent so the `NOTE N:` prefix stays visually anchored when prose wraps. Single-note cells skip the split and just use `whitespace-pre-wrap`, preserving any author-supplied newlines.
+
+### Changes
+
+- `components/triage/SpecDrawer.tsx` — added `width` state with localStorage persistence (`bugzilla-triage:spec-drawer:width`), drag handle on the left edge with cursor + selection lock during drag, window-resize re-clamp.
+- `components/triage/SpecDrawer.tsx` → `ClauseTable` — new `isNoteRow()` heuristic + `maxCols` computation, conditional NOTE-row render with `colSpan` and per-note splitting.
+
+### Upgrade notes
+
+- **No corpus or settings change.** v0.4.1 reads the same `rel17-v4` corpus and the same `settings.json` as v0.4.0.
+- **First open of a drawer after upgrade** uses the 672 px default. Drag once, your preference is remembered from then on.
+- **Header-detection edge case**: a table that happens to start with a NOTE row (uncommon, seen in some amended-spec annex tables) no longer hijacks the note as a column header — `isNoteRow()` is checked before the header heuristic.
+
+---
+
 ## v0.4.0 — Inline 3GPP figure rendering + LLM vision over corpus diagrams
 
 **Tagged:** —
