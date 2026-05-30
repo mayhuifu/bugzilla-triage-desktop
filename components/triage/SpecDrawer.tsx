@@ -498,16 +498,46 @@ function stripPipeRows(text: string): string {
     .trim();
 }
 
+/** 3GPP NOTE rows live at the bottom of most spec tables and have the
+ *  shape ["NOTE 1: text…", "", "", …] — i.e. the prose lives in the
+ *  first cell and all remaining cells are empty padding. Rendered
+ *  naively, the prose gets crammed into the first column's width
+ *  (which is sized for short band names like "n95 8"), producing the
+ *  awkward 1-word-per-line wrap shown in the user's screenshot.
+ *
+ *  Detection: first cell starts with the literal "NOTE" (optionally
+ *  followed by digits + colon) AND every subsequent cell is blank.
+ *  Case-insensitive on the keyword so we also catch "Note:" or
+ *  "NOTE:" variants seen in older specs. */
+function isNoteRow(row: string[]): boolean {
+  if (row.length === 0) return false;
+  const first = (row[0] || "").trim();
+  if (!/^note\b/i.test(first)) return false;
+  return row.slice(1).every(c => !c || !c.trim());
+}
+
 function ClauseTable({ rows }: { rows: string[][] }) {
   if (rows.length === 0) return null;
   // Treat the first row as the header when it has at least 2 cells and
   // any cell contains a non-numeric token (typical of header labels);
-  // otherwise render all rows as <tbody>.
+  // otherwise render all rows as <tbody>. NOTE rows are excluded from
+  // this check — a table that happens to start with a NOTE row (rare
+  // but happens for amended tables) won't get the note treated as a
+  // header.
   const firstLooksLikeHeader =
+    !isNoteRow(rows[0]) &&
     rows[0].length >= 2 &&
     rows[0].some(c => /[A-Za-z]{2,}/.test(c));
   const head = firstLooksLikeHeader ? rows[0] : null;
   const body = firstLooksLikeHeader ? rows.slice(1) : rows;
+  // colSpan for NOTE rows = the widest row in the table. Use the head
+  // width when present, else the max across body rows (3GPP tables are
+  // sometimes ragged at the right edge).
+  const maxCols = Math.max(
+    head?.length ?? 0,
+    ...body.map(r => r.length),
+    1,
+  );
   return (
     <div className="overflow-x-auto border border-bg-border rounded">
       <table className="text-[11px] w-full">
@@ -526,18 +556,37 @@ function ClauseTable({ rows }: { rows: string[][] }) {
           </thead>
         )}
         <tbody>
-          {body.map((row, i) => (
-            <tr key={i} className="even:bg-bg-card/30">
-              {row.map((c, j) => (
-                <td
-                  key={j}
-                  className="px-2 py-1 text-slate-300 border-b border-bg-border/40 align-top"
-                >
-                  {c}
-                </td>
-              ))}
-            </tr>
-          ))}
+          {body.map((row, i) => {
+            // NOTE rows span the entire table — restores the original
+            // 3GPP layout where the note prose flows under the table
+            // body, not constrained to the first column. Subtle visual
+            // distinction (italic + slightly lighter background) helps
+            // the reader pick them out at a glance.
+            if (isNoteRow(row)) {
+              return (
+                <tr key={i} className="bg-bg-card/40">
+                  <td
+                    colSpan={maxCols}
+                    className="px-2 py-1.5 text-slate-400 italic border-b border-bg-border/40 align-top whitespace-pre-wrap"
+                  >
+                    {row[0]}
+                  </td>
+                </tr>
+              );
+            }
+            return (
+              <tr key={i} className="even:bg-bg-card/30">
+                {row.map((c, j) => (
+                  <td
+                    key={j}
+                    className="px-2 py-1 text-slate-300 border-b border-bg-border/40 align-top"
+                  >
+                    {c}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
