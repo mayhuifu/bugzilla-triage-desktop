@@ -563,13 +563,39 @@ function ClauseTable({ rows }: { rows: string[][] }) {
             // distinction (italic + slightly lighter background) helps
             // the reader pick them out at a glance.
             if (isNoteRow(row)) {
+              // The DOCX parser frequently concatenates multiple notes
+              // into one cell separated only by spaces, producing
+              // "NOTE 1: text. NOTE 2: text. NOTE 3: …" which reads as
+              // a single dense paragraph. Split on the NOTE-marker
+              // boundary so each note renders on its own paragraph
+              // line. Lookahead-only so the marker stays attached to
+              // its prose. Tolerant of "NOTE", "Note", colon or period
+              // (older 3GPP styles).
+              const noteSegments = (row[0] || "")
+                .split(/(?=\bNOTE\s+\d+\s*[:.])/gi)
+                .map(s => s.trim())
+                .filter(Boolean);
               return (
                 <tr key={i} className="bg-bg-card/40">
                   <td
                     colSpan={maxCols}
-                    className="px-2 py-1.5 text-slate-400 italic border-b border-bg-border/40 align-top whitespace-pre-wrap"
+                    className="px-3 py-2 text-slate-400 italic border-b border-bg-border/40 align-top space-y-1.5"
                   >
-                    {row[0]}
+                    {noteSegments.length > 1
+                      ? noteSegments.map((seg, k) => (
+                          // Hanging indent so "NOTE N:" stays visually
+                          // distinct from its continuation lines.
+                          <div key={k} className="pl-12 -indent-12">
+                            {seg}
+                          </div>
+                        ))
+                      : (
+                          // Single-note row — no need for the split
+                          // treatment; whitespace-pre-wrap preserves
+                          // any embedded line breaks from the source.
+                          <div className="whitespace-pre-wrap">{row[0]}</div>
+                        )
+                    }
                   </td>
                 </tr>
               );
