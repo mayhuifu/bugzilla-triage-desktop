@@ -76,12 +76,97 @@ interface Props {
   onClose: () => void;
 }
 
+// Drawer width bounds. The min keeps the spec citation header legible
+// (~360 px is the narrowest where 3-letter Copy / View buttons still fit
+// alongside the citation chip). The max stops at viewport-width minus
+// a small gutter so a click-outside backdrop area always remains.
+const DRAWER_MIN_WIDTH = 360;
+const DRAWER_MAX_WIDTH_GUTTER = 80;   // px reserved on the left
+const DRAWER_DEFAULT_WIDTH = 672;     // matches old `max-w-2xl`
+// LocalStorage key — survives reloads so a user who widens the drawer
+// once doesn't have to re-drag every session. Keyed under the spec
+// namespace so future drawers (e.g. an attachment viewer) can have
+// their own preferences.
+const DRAWER_WIDTH_LS_KEY = "bugzilla-triage:spec-drawer:width";
+
 export function SpecDrawer({ citation, onClose }: Props) {
   const [clause, setClause] = useState<ClauseResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
+
+  // ── Resizable width ──────────────────────────────────────────────
+  // Restore the user's last drag width on mount (clamped to current
+  // viewport in case they shrank the window between sessions). Falls
+  // back to DRAWER_DEFAULT_WIDTH when the storage key is missing or
+  // unreadable (private-mode browsers, first-ever open, etc.).
+  const [width, setWidth] = useState<number>(() => {
+    if (typeof window === "undefined") return DRAWER_DEFAULT_WIDTH;
+    try {
+      const stored = parseInt(localStorage.getItem(DRAWER_WIDTH_LS_KEY) || "", 10);
+      if (!Number.isFinite(stored) || stored < DRAWER_MIN_WIDTH) return DRAWER_DEFAULT_WIDTH;
+      const max = Math.max(DRAWER_MIN_WIDTH, window.innerWidth - DRAWER_MAX_WIDTH_GUTTER);
+      return Math.min(stored, max);
+    } catch {
+      return DRAWER_DEFAULT_WIDTH;
+    }
+  });
+  // Drag state. We track in a ref instead of state because the
+  // mousemove handler fires at 60 Hz; setting React state per frame
+  // is wasteful and adds noticeable latency to the drag.
+  const dragRef = useRef<{ active: boolean; startX: number; startWidth: number }>({
+    active: false, startX: 0, startWidth: 0,
+  });
+
+  const onResizeStart = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    dragRef.current = { active: true, startX: e.clientX, startWidth: width };
+    // While dragging, lock the cursor + suppress text selection across
+    // the whole page so the user can drag freely past the drawer.
+    document.body.style.cursor = "ew-resize";
+    document.body.style.userSelect = "none";
+  }, [width]);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dragRef.current.active) return;
+      // Drag-handle is on the LEFT edge of the right-anchored drawer.
+      // Moving the mouse LEFT (lower clientX) widens the drawer; moving
+      // RIGHT narrows it. dx therefore subtracts from the start width.
+      const dx = e.clientX - dragRef.current.startX;
+      const newW = dragRef.current.startWidth - dx;
+      const max = Math.max(DRAWER_MIN_WIDTH, window.innerWidth - DRAWER_MAX_WIDTH_GUTTER);
+      setWidth(Math.max(DRAWER_MIN_WIDTH, Math.min(max, newW)));
+    };
+    const onUp = () => {
+      if (!dragRef.current.active) return;
+      dragRef.current.active = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      // Persist on drop, not every frame — fewer storage writes.
+      try { localStorage.setItem(DRAWER_WIDTH_LS_KEY, String(width)); } catch { /* private mode */ }
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [width]);
+
+  // Persist on window resize so a viewport shrink doesn't leave the
+  // drawer wider than the page. We re-clamp but keep the user's
+  // preference intact: when they grow the viewport back, the drawer
+  // returns to their last drag width.
+  useEffect(() => {
+    const onResize = () => {
+      const max = Math.max(DRAWER_MIN_WIDTH, window.innerWidth - DRAWER_MAX_WIDTH_GUTTER);
+      setWidth(w => Math.min(w, max));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   // Open/close lifecycle: when `citation` changes, refetch.
   useEffect(() => {
@@ -151,15 +236,38 @@ export function SpecDrawer({ citation, onClose }: Props) {
         aria-hidden="true"
       />
 
-      {/* The drawer itself — fixed to the right, full height. */}
+      {/* The drawer itself — fixed to the right, full height. Width is
+          user-resizable via the drag handle on its left edge; restored
+          from localStorage so the choice persists across sessions. */}
       <aside
         role="dialog"
         aria-modal="true"
         aria-label={clause ? `Spec clause ${clause.citation}` : "Spec clause"}
-        className="fixed top-0 right-0 bottom-0 z-50 w-full max-w-2xl
+        className="fixed top-0 right-0 bottom-0 z-50
                    bg-bg-panel border-l border-bg-border shadow-2xl
                    flex flex-col animate-slide-up"
+        style={{ width: `${width}px`, maxWidth: "100vw" }}
       >
+        {/* Drag handle on the LEFT edge — a 6 px-wide invisible grab
+            zone with a 1 px visible spine. Hovering reveals an accent
+            stripe to telegraph that it's interactive; on grab, the
+            page-wide cursor + selection-suppress in onResizeStart keeps
+            the drag smooth even when the mouse leaves the handle. */}
+        <div
+          onMouseDown={onResizeStart}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize spec drawer"
+          aria-valuemin={DRAWER_MIN_WIDTH}
+          aria-valuenow={width}
+          tabIndex={0}
+          title={`Drag to resize · ${width} px`}
+          className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize
+                     bg-transparent hover:bg-accent/40 active:bg-accent/70
+                     transition-colors z-10
+                     before:content-[''] before:absolute before:inset-y-0
+                     before:left-0 before:w-px before:bg-bg-border"
+        />
         {/* Header */}
         <div className="flex items-start gap-3 p-4 border-b border-bg-border bg-bg-card">
           <div className="w-8 h-8 rounded-md bg-gradient-to-br from-accent to-fuchsia-600 flex items-center justify-center shrink-0">
