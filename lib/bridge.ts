@@ -47,8 +47,11 @@ export async function bridgeFindUsers(match: string, limit?: number) {
   return findUsers(match, limit);
 }
 
-export async function bridgeStats(opts: Parameters<typeof stats>[0]) {
-  return stats(opts);
+export async function bridgeStats(
+  opts: Parameters<typeof stats>[0],
+  part?: Parameters<typeof stats>[1],
+) {
+  return stats(opts, part);
 }
 
 // ─── Triage — direct Anthropic SDK ────────────────────────────────

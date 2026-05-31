@@ -26,6 +26,7 @@ import type { TicketDetail } from "../types";
 import { corpusHasVectors, getCorpusDb, getFigureImagesForClause } from "./store";
 import { expandAcronyms } from "./acronyms";
 import { getCorpusEmbedder } from "./embedder";
+import { ensureBgeEmbedderRegistered } from "./embedder-bge";
 
 /** Structured table lifted from the v2 corpus's `tables_json` column.
  *  The corpus pipeline (bugzilla-triage-corpus 02-parse.ts) extracts these
@@ -120,6 +121,20 @@ interface QueryShape {
   tokens: string[];
 }
 
+/** Tokenise an arbitrary blob into BM25-friendly content terms: lowercase,
+ *  punctuation-stripped, stopword-filtered, deduplicated. Shared by the
+ *  ticket path (tokenizeTicket) and the raw-query path (buildQueryFromText)
+ *  so /spec search and AI-triage retrieval tokenise identically. */
+function tokenizeText(text: string): string[] {
+  const tokens = text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter(t => t.length >= 3 && t.length <= 32)
+    .filter(t => !STOPWORDS.has(t));
+  return Array.from(new Set(tokens));
+}
+
 function tokenizeTicket(ticket: TicketDetail): string[] {
   const parts: string[] = [
     ticket.summary,
@@ -128,13 +143,7 @@ function tokenizeTicket(ticket: TicketDetail): string[] {
     ...(ticket.keywords ?? []),
     ...ticket.comments.slice(1, 3).map(c => c.text.slice(0, 800)),
   ];
-  const blob = parts.join(" ").toLowerCase();
-  const tokens = blob
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .split(/\s+/)
-    .filter(t => t.length >= 3 && t.length <= 32)
-    .filter(t => !STOPWORDS.has(t));
-  return Array.from(new Set(tokens));
+  return tokenizeText(parts.join(" "));
 }
 
 function applyNrLteBias(tokens: string[], blob: string): string[] {
@@ -154,6 +163,19 @@ function buildQuery(ticket: TicketDetail, useAcronymExpansion: boolean): QuerySh
   // FTS5 MATCH default is AND across bare terms, which empirically returns
   // zero hits on real ticket text. Explicit OR gives recall-over-precision
   // behaviour; BM25 then ranks by which doc covers more terms.
+  const match = uniq.length === 0 ? '""' : uniq.map(t => `"${t.replace(/"/g, '""')}"`).join(" OR ");
+  return { match, tokens: uniq };
+}
+
+/** Build an FTS5 query from a free-text string (the /spec search box, or a
+ *  ticket summary handed to "Research in 3GPP"). Same acronym-expansion +
+ *  NR/LTE bias the ticket path uses, but driven by one blob instead of the
+ *  structured ticket fields. */
+function buildQueryFromText(text: string, useAcronymExpansion: boolean): QueryShape {
+  const baseTokens = tokenizeText(text);
+  const expanded = useAcronymExpansion ? expandAcronyms(baseTokens) : baseTokens;
+  const biased = applyNrLteBias(expanded, text.toLowerCase());
+  const uniq = Array.from(new Set(biased)).slice(0, 60);
   const match = uniq.length === 0 ? '""' : uniq.map(t => `"${t.replace(/"/g, '""')}"`).join(" OR ");
   return { match, tokens: uniq };
 }
@@ -189,6 +211,11 @@ function decidePath(): "bm25-v1" | "bm25-v2" | "hybrid-rrf" {
   // embedder has been registered AND its model matches the corpus's
   // build-time model. Otherwise fall back to the wider-FTS5 BM25 path.
   if (!corpusHasVectors()) return "bm25-v2";
+  // Lazily register the bundled bge embedder on first need (idempotent).
+  // Done here rather than via instrumentation.ts because this module is
+  // node-only; instrumentation is also edge-compiled, where the embedder's
+  // node:fs / onnxruntime-node deps can't resolve.
+  ensureBgeEmbedderRegistered();
   const embedder = getCorpusEmbedder();
   if (!embedder) return "bm25-v2";
   const corpusModel = corpusEmbeddingModel();
@@ -225,7 +252,7 @@ function mapRows(rows: CandidateRow[], path: RetrievedClause["retrieverPath"]): 
 /** Synchronous BM25 path used by both v1 and v2 (the SQL differs only in
  *  which FTS columns the underlying tokenize+rank operates over, which is
  *  baked into the FTS5 virtual table at build time). */
-function bm25Retrieve(matchExpr: string, label: "bm25-v1" | "bm25-v2"): RetrievedClause[] {
+function bm25Retrieve(matchExpr: string, label: "bm25-v1" | "bm25-v2", limit: number = TOP_K): RetrievedClause[] {
   const db = getCorpusDb();
   if (!db) return [];
   try {
@@ -237,7 +264,7 @@ function bm25Retrieve(matchExpr: string, label: "bm25-v1" | "bm25-v2"): Retrieve
       WHERE clauses_fts MATCH ?
       ORDER BY score
       LIMIT ?
-    `).all(matchExpr, TOP_K) as CandidateRow[];
+    `).all(matchExpr, limit) as CandidateRow[];
     return mapRows(rows, label);
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -248,7 +275,7 @@ function bm25Retrieve(matchExpr: string, label: "bm25-v1" | "bm25-v2"): Retrieve
 
 /** Hybrid RRF path. Returns empty array on any failure so caller can
  *  fall through to BM25 — never throws. */
-async function hybridRetrieve(matchExpr: string, queryText: string): Promise<RetrievedClause[]> {
+async function hybridRetrieve(matchExpr: string, queryText: string, limit: number = TOP_K): Promise<RetrievedClause[]> {
   const db = getCorpusDb();
   const embedder = getCorpusEmbedder();
   if (!db || !embedder) return [];
@@ -260,6 +287,10 @@ async function hybridRetrieve(matchExpr: string, queryText: string): Promise<Ret
     console.warn(`[corpus] embedder.embed failed; falling back to BM25:`, err);
     return [];
   }
+  // Each source must surface at least `limit` candidates so the RRF fusion
+  // has enough to rank — widen the per-source cap when the caller asks for
+  // more than the default top-K (e.g. the /spec search list).
+  const perSource = Math.max(CANDIDATES_PER_SOURCE, limit);
   try {
     const rows = db.prepare(`
       WITH fts_top AS (
@@ -288,9 +319,9 @@ async function hybridRetrieve(matchExpr: string, queryText: string): Promise<Ret
       ORDER BY fused.rrf_score DESC
       LIMIT ?
     `).all(
-      matchExpr, CANDIDATES_PER_SOURCE,
-      vecToBlob(vec), CANDIDATES_PER_SOURCE,
-      RRF_K, TOP_K,
+      matchExpr, perSource,
+      vecToBlob(vec), perSource,
+      RRF_K, limit,
     ) as CandidateRow[];
     return mapRows(rows, "hybrid-rrf");
   } catch (err) {
@@ -344,10 +375,68 @@ export async function retrieveContextAsync(ticket: TicketDetail): Promise<Retrie
   return retrieveContext(ticket);
 }
 
+export interface RetrieveByTextOptions {
+  /** How many ranked clauses to return. Clamped to [1, 50]. Defaults to
+   *  TOP_K (the prompt-injection budget); the /spec search list passes a
+   *  larger value. */
+  limit?: number;
+}
+
+/** Free-text retrieval — the standalone-search counterpart to
+ *  retrieveContextAsync(ticket). Takes a raw query string (the /spec search
+ *  box, or a ticket summary forwarded from "Research in 3GPP") instead of a
+ *  structured TicketDetail, and returns the top-`limit` ranked clauses.
+ *
+ *  Path selection mirrors the ticket path exactly (decidePath()): hybrid
+ *  RRF when a matching embedder is registered, else the wider-FTS5 BM25-v2
+ *  path, else the v1 BM25 path. Never throws — every failure mode degrades
+ *  to a narrower path or an empty array, so the search UI can render a
+ *  graceful "no results" instead of an error. */
+export async function retrieveByText(
+  query: string,
+  opts: RetrieveByTextOptions = {},
+): Promise<RetrievedClause[]> {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+  const limit = Math.max(1, Math.min(opts.limit ?? TOP_K, 50));
+  const path = decidePath();
+  if (path === "hybrid-rrf") {
+    const q = buildQueryFromText(trimmed, /*useAcronymExpansion=*/ true);
+    const hits = await hybridRetrieve(q.match, trimmed, limit);
+    if (hits.length > 0) return hits;
+    return bm25Retrieve(q.match, "bm25-v2", limit);
+  }
+  if (path === "bm25-v2") {
+    const q = buildQueryFromText(trimmed, /*useAcronymExpansion=*/ true);
+    return bm25Retrieve(q.match, "bm25-v2", limit);
+  }
+  const q = buildQueryFromText(trimmed, /*useAcronymExpansion=*/ false);
+  return bm25Retrieve(q.match, "bm25-v1", limit);
+}
+
+/** Which retrieval strategy the open corpus would use right now. Returns
+ *  "none" when no corpus is installed. Lets /api/corpus/search and
+ *  /api/corpus/status report `hybridActive` to the UI (and surfaces the
+ *  silent BM25-fallback-on-model-mismatch case, which is otherwise
+ *  invisible). */
+export function activeRetrieverPath(): "bm25-v1" | "bm25-v2" | "hybrid-rrf" | "none" {
+  if (!getCorpusDb()) return "none";
+  return decidePath();
+}
+
 /** Parse a model-emitted citation string into our canonical clause id.
- *  Tolerant of the various forms the model might produce. */
+ *  Tolerant of the various forms the model might produce.
+ *
+ *  The clause-number capture allows dot-separated ALPHANUMERIC segments,
+ *  not just digits, because 3GPP clause numbers carry letters in several
+ *  places: Annex clauses lead with a letter (`F.5.1`, `A.7.5.6`), and some
+ *  amended clauses embed letters mid-string (`8.6.2A.1`) or as a suffix
+ *  (`8.6C`). The old `[\d.]+` pattern silently failed to match any of
+ *  these, so a search result for an Annex clause would render in the list
+ *  but 404 in the drawer ("clause not found in corpus") even though the
+ *  clause is present — the citation simply never parsed back into its id. */
 function parseCitation(reference: string): { spec: string; clauseNo: string } | null {
-  const m = reference.match(/(?:TS|TR)\s+(\d+\.\d+(?:-\d+)?)\s*(?:§|sec(?:tion)?|cl(?:ause)?|:|,|\.|\s)+\s*([\d.]+)/i);
+  const m = reference.match(/(?:TS|TR)\s+(\d+\.\d+(?:-\d+)?)\s*(?:§|sec(?:tion)?|cl(?:ause)?|:|,|\.|\s)+\s*([A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*)/i);
   if (!m) return null;
   return { spec: m[1], clauseNo: m[2].replace(/\.$/, "") };
 }

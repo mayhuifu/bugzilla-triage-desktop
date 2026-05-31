@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { readLocalManifest, fetchRemoteManifest, isRemoteNewer, type CorpusManifest } from "@/lib/corpus/manifest";
 import { getDownloadProgress } from "@/lib/corpus/downloader";
 import { getCorpusMeta, corpusEngineError } from "@/lib/corpus/store";
+import { activeRetrieverPath } from "@/lib/corpus/retriever";
+import { BGE_EMBEDDER_MODEL_ID } from "@/lib/corpus/embedder-bge";
 import { loadSettings } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
@@ -39,6 +41,15 @@ export async function GET(req: Request) {
   //                         should surface this so the user has something
   //                         to act on instead of a mysterious blank state.
   const installed = !!localManifest;
+
+  // Retrieval mode — surfaces the otherwise-silent "embedder doesn't match
+  // corpus → BM25 fallback" degrade. retrieverPath is the live decision
+  // decidePath() would make right now; hybridActive is the headline bool
+  // the UI badge keys off. embeddingModel (corpus) vs queryEmbedderModel
+  // (bundled) lets the UI explain WHY hybrid is off when it is.
+  const retrieverPath = activeRetrieverPath();
+  const hybridActive = retrieverPath === "hybrid-rrf";
+
   const base = {
     installed,
     engineError,
@@ -51,6 +62,11 @@ export async function GET(req: Request) {
     release: localManifest?.release ?? null,
     manifestUrl: settings.corpusManifestUrl,
     progress,
+    // ── Retrieval mode (v0.5) ───────────────────────────────────────
+    retrieverPath,
+    hybridActive,
+    embeddingModel: meta?.embeddingModel ?? null,     // what the corpus was built with
+    queryEmbedderModel: BGE_EMBEDDER_MODEL_ID,         // what the desktop bundles
   };
 
   if (!checkRemote) {

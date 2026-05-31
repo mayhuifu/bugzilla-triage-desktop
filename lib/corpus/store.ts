@@ -176,6 +176,47 @@ export function getFigureImageBlob(
   }
 }
 
+/** Batch-probe which of the given clause ids have renderable figure
+ *  images and/or structured tables. Used by /api/corpus/search to light
+ *  the "figures"/"tables" chips on result cards WITHOUT loading any blobs
+ *  — the ranking path (mapRows) doesn't carry this metadata, only a direct
+ *  lookupClause does, so search cards would otherwise never show the hint.
+ *
+ *  Two set-membership queries for the whole result page (not per-row), so
+ *  it's cheap. Every clause id is seeded false; a clause is `hasFigures`
+ *  only when it has an actual image blob (a caption-only `figures_json`
+ *  entry doesn't count — the chip promises a viewable diagram). Degrades
+ *  to all-false on corpora missing the v3 `figure_images` table or the v2
+ *  `tables_json` column. */
+export function getClauseMediaFlags(
+  clauseIds: string[],
+): Map<string, { hasFigures: boolean; hasTables: boolean }> {
+  const out = new Map<string, { hasFigures: boolean; hasTables: boolean }>();
+  const db = getCorpusDb();
+  if (!db || clauseIds.length === 0) return out;
+  for (const id of clauseIds) out.set(id, { hasFigures: false, hasTables: false });
+  const placeholders = clauseIds.map(() => "?").join(",");
+
+  if (corpusHasFigureImages()) {
+    try {
+      const rows = db.prepare(
+        `SELECT DISTINCT clause_id AS id FROM figure_images WHERE clause_id IN (${placeholders})`,
+      ).all(...clauseIds) as Array<{ id: string }>;
+      for (const r of rows) { const f = out.get(r.id); if (f) f.hasFigures = true; }
+    } catch { /* table absent / query failed → leave flags false */ }
+  }
+
+  try {
+    const rows = db.prepare(
+      `SELECT id FROM clauses WHERE id IN (${placeholders})
+         AND tables_json IS NOT NULL AND tables_json NOT IN ('', '[]')`,
+    ).all(...clauseIds) as Array<{ id: string }>;
+    for (const r of rows) { const f = out.get(r.id); if (f) f.hasTables = true; }
+  } catch { /* tables_json column absent on v1 corpora → leave flags false */ }
+
+  return out;
+}
+
 /** Lazily open the corpus DB. Returns null when the file is absent,
  *  so callers can decide whether to skip retrieval or surface the
  *  fact in the UI (e.g. a "download corpus" banner). */
@@ -312,6 +353,124 @@ export function closeCorpusDb(): void {
   _db = null;
   _path = null;
   _hasVec = false;
+}
+
+// ── Browse / TOC / acronym helpers (v0.5 spec workbench) ──────────
+// All read-only, all degrade to [] when the corpus is absent or a table
+// is missing (older corpora). The /spec page's sidebar + acronym pane
+// call these via thin API routes.
+
+export interface SpecSummary {
+  spec: string;       // e.g. "TS 38.211"
+  count: number;      // leaf clauses curated for this spec
+}
+
+/** Distinct curated specs with their leaf-clause counts, ordered by spec.
+ *  Backs the /spec browse sidebar's spec list. */
+export function listSpecs(): SpecSummary[] {
+  const db = getCorpusDb();
+  if (!db) return [];
+  try {
+    return db.prepare(
+      "SELECT spec, COUNT(*) AS count FROM clauses GROUP BY spec ORDER BY spec",
+    ).all() as SpecSummary[];
+  } catch {
+    return [];
+  }
+}
+
+export interface TocClause {
+  clauseId: string;
+  clauseNo: string;
+  citation: string;
+  title: string;
+  parentTitle: string | null;
+}
+
+/** All leaf clauses for one spec, ordered naturally by clause number
+ *  (so 5.3.5.2 sorts before 5.3.5.10). Capped to keep the payload sane on
+ *  the largest specs. Backs the sidebar's per-spec clause list. */
+export function listSpecClauses(spec: string, limit = 4000): TocClause[] {
+  const db = getCorpusDb();
+  if (!db) return [];
+  try {
+    const rows = db.prepare(`
+      SELECT id AS clauseId, clause_no AS clauseNo, citation, title, parent_title AS parentTitle
+      FROM clauses WHERE spec = ? LIMIT ?
+    `).all(spec, limit) as TocClause[];
+    // Natural sort on the dotted clause number (lexical sort mis-orders
+    // 5.3.5.10 before 5.3.5.2). Annex letters (A.7.5…) sort after digits.
+    return rows.sort((a, b) => compareClauseNo(a.clauseNo, b.clauseNo));
+  } catch {
+    return [];
+  }
+}
+
+function compareClauseNo(a: string, b: string): number {
+  const pa = a.split(".");
+  const pb = b.split(".");
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const sa = pa[i] ?? "";
+    const sb = pb[i] ?? "";
+    const na = parseInt(sa, 10);
+    const nb = parseInt(sb, 10);
+    const aNum = !Number.isNaN(na);
+    const bNum = !Number.isNaN(nb);
+    if (aNum && bNum) {
+      if (na !== nb) return na - nb;
+    } else if (aNum !== bNum) {
+      // Numeric segments (clauses) sort before alpha segments (annexes).
+      return aNum ? -1 : 1;
+    } else {
+      const c = sa.localeCompare(sb);
+      if (c !== 0) return c;
+    }
+  }
+  return 0;
+}
+
+export interface AcronymRow {
+  acronym: string;
+  expansion: string;
+  aliases: string[];
+}
+
+/** Look up acronyms by prefix/substring across acronym, expansion, and
+ *  aliases. Empty query returns the full glossary (capped). Original case
+ *  is preserved (the in-memory expansion cache lowercases, so we read the
+ *  table directly for display). Returns [] on corpora without the table. */
+export function searchAcronyms(query: string, limit = 50): AcronymRow[] {
+  const db = getCorpusDb();
+  if (!db) return [];
+  try {
+    const q = query.trim();
+    let rows: Array<{ acronym: string; expansion: string; aliases: string }>;
+    if (!q) {
+      rows = db.prepare(
+        "SELECT acronym, expansion, aliases FROM acronyms ORDER BY acronym LIMIT ?",
+      ).all(limit) as typeof rows;
+    } else {
+      const like = `%${q.replace(/[%_]/g, m => "\\" + m)}%`;
+      const prefix = `${q.replace(/[%_]/g, m => "\\" + m)}%`;
+      rows = db.prepare(`
+        SELECT acronym, expansion, aliases FROM acronyms
+        WHERE acronym LIKE ? ESCAPE '\\' OR expansion LIKE ? ESCAPE '\\' OR aliases LIKE ? ESCAPE '\\'
+        ORDER BY (acronym LIKE ? ESCAPE '\\') DESC, LENGTH(acronym), acronym
+        LIMIT ?
+      `).all(like, like, like, prefix, limit) as typeof rows;
+    }
+    return rows.map(r => {
+      let aliases: string[] = [];
+      try {
+        const p = JSON.parse(r.aliases) as unknown;
+        if (Array.isArray(p)) aliases = p.filter((x): x is string => typeof x === "string");
+      } catch { /* keep empty */ }
+      return { acronym: r.acronym, expansion: r.expansion, aliases };
+    });
+  } catch {
+    return [];
+  }
 }
 
 /** Read corpus metadata (version, build date, schema version). Used by

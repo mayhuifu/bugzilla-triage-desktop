@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
   Sparkles, Send, Loader2, ShieldCheck, Lock, AlertTriangle, RefreshCw,
   ListChecks, Lightbulb, MessageCircleQuestion, AlertOctagon, FileText,
@@ -984,6 +985,17 @@ export function TriageChatPanel({ ticketId, ticketStatus, ticketSummary, autotri
                 <Pencil className="w-4 h-4" />
                 Manual Triage
               </button>
+              {/* Cross-feature glue (v0.5): explore related 3GPP clauses
+                  without invoking the LLM. Opens the spec workbench
+                  pre-loaded with this ticket's summary. */}
+              <Link
+                href={`/spec?q=${encodeURIComponent(ticketSummary)}`}
+                className="btn-secondary text-sm"
+                title="Search the local 3GPP corpus for clauses related to this ticket (no LLM required)"
+              >
+                <BookText className="w-4 h-4" />
+                Research in 3GPP
+              </Link>
             </div>
             <div className="text-[10px] text-slate-500 text-center max-w-xs">
               <span className="text-fuchsia-300">AI</span> drafts the structured analysis ·{" "}

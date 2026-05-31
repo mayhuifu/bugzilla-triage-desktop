@@ -3,6 +3,7 @@ import {
   loadSettings, saveSettings, validateSettings, settingsForUi,
   isBugzillaConfigured, type Settings,
 } from "@/lib/settings";
+import { bumpServerCacheVersion } from "@/lib/server-cache";
 
 export const dynamic = "force-dynamic";
 
@@ -71,6 +72,9 @@ export async function POST(req: NextRequest) {
 
   try {
     saveSettings(next);
+    // Drop cached whoami/products/stats — the Bugzilla URL/key may have
+    // changed, so anything cached from the previous connection is stale.
+    bumpServerCacheVersion();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: `failed to save: ${msg}` }, { status: 500 });

@@ -94,11 +94,27 @@ function nodeRequest(
   body: string | undefined,
   insecure: boolean,
   timeoutMs: number,
+  connectTimeoutMs = 5_000,
 ): Promise<HttpRes> {
   return new Promise((resolve, reject) => {
     const u = new URL(fullUrl);
     const isHttps = u.protocol === "https:";
     const mod = isHttps ? https : http;
+
+    // Two-phase timeout. `connectTimeoutMs` is a short ceiling on
+    // ESTABLISHING the connection (DNS + TCP + TLS) — when the internal
+    // Bugzilla host is unreachable (VPN down → resolves to a placeholder IP
+    // that never completes the handshake), this fails in a few seconds
+    // instead of blocking on the long response timeout. Once the socket is
+    // connected we clear it, so `timeoutMs` (generous) governs the actual
+    // response — large stats count-queries can legitimately take many
+    // seconds and must NOT be cut off.
+    let connected = false;
+    const connectTimer = setTimeout(() => {
+      if (!connected) req.destroy(new Error(`connect timeout after ${connectTimeoutMs}ms`));
+    }, connectTimeoutMs);
+    const markConnected = () => { connected = true; clearTimeout(connectTimer); };
+
     const req = mod.request(
       {
         method,
@@ -112,6 +128,7 @@ function nodeRequest(
         timeout: timeoutMs,
       },
       res => {
+        markConnected();
         const chunks: Buffer[] = [];
         res.on("data", c => chunks.push(c));
         res.on("end", () => resolve({
@@ -121,7 +138,11 @@ function nodeRequest(
         res.on("error", reject);
       },
     );
-    req.on("error", reject);
+    req.on("socket", s => {
+      s.on("connect", markConnected);       // plain HTTP
+      s.on("secureConnect", markConnected); // HTTPS (after TLS handshake)
+    });
+    req.on("error", err => { clearTimeout(connectTimer); reject(err); });
     req.on("timeout", () => req.destroy(new Error(`timeout after ${timeoutMs}ms`)));
     if (body) req.write(body);
     req.end();
@@ -136,9 +157,18 @@ async function bzGet(path: string, params: Params, timeoutMs = 30_000): Promise<
   const url = buildUrl(cfg.url, path, [["api_key", cfg.apiKey], ...params]);
 
   // Retry transient TLS / connection-reset errors common on internal VPN
-  // tunnels. The Python bridge had identical retry logic.
+  // tunnels — but FAIL FAST when the host is simply unreachable. The old
+  // 4-attempt loop turned a VPN-down state into a ~12s freeze per request
+  // (and the dashboard fires ~16 at once). Now: at most 2 attempts (1
+  // retry catches a genuine transient blip), each capped by the short
+  // connect timeout in nodeRequest, plus an overall budget so the worst
+  // case is ~6-7s instead of ~12s. The Refresh button is the recovery path
+  // if a real blip outlasts the single retry.
+  const MAX_ATTEMPTS = 2;
+  const TOTAL_BUDGET_MS = 9_000;
+  const startedAt = Date.now();
   let lastErr: unknown;
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
       const res = await nodeRequest("GET", url, undefined, cfg.insecure, timeoutMs);
       if (res.status < 200 || res.status >= 300) {
@@ -148,9 +178,10 @@ async function bzGet(path: string, params: Params, timeoutMs = 30_000): Promise<
     } catch (err) {
       lastErr = err;
       const msg = err instanceof Error ? err.message : String(err);
-      const retryable = /ECONNRESET|EPIPE|ETIMEDOUT|timeout|SSL|TLS|socket hang up|UNABLE_TO/i.test(msg);
-      if (!retryable || attempt === 3) break;
-      await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+      const retryable = /ECONNRESET|EPIPE|ETIMEDOUT|timeout|SSL|TLS|socket hang up|UNABLE_TO|connect timeout/i.test(msg);
+      const budgetLeft = TOTAL_BUDGET_MS - (Date.now() - startedAt);
+      if (!retryable || attempt === MAX_ATTEMPTS - 1 || budgetLeft < 1_500) break;
+      await new Promise(r => setTimeout(r, 400));
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
@@ -612,7 +643,17 @@ export async function findUsers(match: string, limit = 20): Promise<{ users: Bug
 
 // ── stats (14 parallel queries) ───────────────────────────────────
 
-export async function stats(opts: { product?: string; component?: string; assignee?: string }): Promise<DashboardStats> {
+/** Which slice of the dashboard stats to compute. The 14 underlying
+ *  Bugzilla count-queries split into 6 "core" (the open/closed cards) and
+ *  8 "trend" (the week-over-week bar). The dashboard fetches the two parts
+ *  separately so the cards paint after 6 queries instead of waiting for all
+ *  14 — roughly halving time-to-first-content on a slow Bugzilla. */
+export type StatsPart = "core" | "trend" | "all";
+
+export async function stats(
+  opts: { product?: string; component?: string; assignee?: string },
+  part: StatsPart = "all",
+): Promise<Partial<DashboardStats> & { scope: DashboardStats["scope"]; generatedAt: string }> {
   const today = new Date();
   const isoDaysAgo = (d: number) => {
     const t = new Date(today.getTime() - d * 86_400_000);
@@ -675,38 +716,59 @@ export async function stats(opts: { product?: string; component?: string; assign
     return total;
   }
 
-  // Kick off all 14 queries in parallel.
-  const [
-    openTotal, openBlocker, openCritical,
-    closedTotal, closedBlocker, closedCritical,
-    filed7, filed7BC, filedPrev7, filedPrev7BC,
-    closed7, closed7BC, closedPrev7, closedPrev7BC,
-  ] = await Promise.all([
-    countQuery(openStatusPairs),
-    countQuery([...openStatusPairs, ["severity", "Blocker"]]),
-    countQuery([...openStatusPairs, ["severity", "Critical"]]),
-    countQuery(closedStatusPairs),
-    countQuery([...closedStatusPairs, ["severity", "Blocker"]]),
-    countQuery([...closedStatusPairs, ["severity", "Critical"]]),
-    countQuery([["creation_time", d7]]),
-    countQuery([["creation_time", d7], ...bcPairs]),
-    countQuery([["creation_time", d14]], d7),
-    countQuery([["creation_time", d14], ...bcPairs], d7),
-    countQuery([...closedStatusPairs, ["last_change_time", d7]]),
-    countQuery([...closedStatusPairs, ["last_change_time", d7], ...bcPairs]),
-    countQuery([...closedStatusPairs, ["last_change_time", d14]], undefined, d7),
-    countQuery([...closedStatusPairs, ["last_change_time", d14], ...bcPairs], undefined, d7),
-  ]);
+  const scope = {
+    product: opts.product ?? null,
+    component: opts.component ?? null,
+    assignee: opts.assignee ?? null,
+  };
+  const wantCore = part === "core" || part === "all";
+  const wantTrend = part === "trend" || part === "all";
 
-  const last7d = { filed: filed7, filedBC: filed7BC, closed: closed7, closedBC: closed7BC };
-  const prev7d = { filed: filedPrev7, filedBC: filedPrev7BC, closed: closedPrev7, closedBC: closedPrev7BC };
-  return {
-    scope: { product: opts.product ?? null, component: opts.component ?? null, assignee: opts.assignee ?? null },
-    open: { total: openTotal, blocker: openBlocker, critical: openCritical },
-    closed: { total: closedTotal, blocker: closedBlocker, critical: closedCritical },
-    trend: { last7d, prev7d, netFlowPerWeek: last7d.filed - last7d.closed },
+  // CORE — the 6 open/closed card counts.
+  const corePromise = wantCore
+    ? Promise.all([
+        countQuery(openStatusPairs),
+        countQuery([...openStatusPairs, ["severity", "Blocker"]]),
+        countQuery([...openStatusPairs, ["severity", "Critical"]]),
+        countQuery(closedStatusPairs),
+        countQuery([...closedStatusPairs, ["severity", "Blocker"]]),
+        countQuery([...closedStatusPairs, ["severity", "Critical"]]),
+      ])
+    : null;
+
+  // TREND — the 8 week-over-week filed/closed counts.
+  const trendPromise = wantTrend
+    ? Promise.all([
+        countQuery([["creation_time", d7]]),
+        countQuery([["creation_time", d7], ...bcPairs]),
+        countQuery([["creation_time", d14]], d7),
+        countQuery([["creation_time", d14], ...bcPairs], d7),
+        countQuery([...closedStatusPairs, ["last_change_time", d7]]),
+        countQuery([...closedStatusPairs, ["last_change_time", d7], ...bcPairs]),
+        countQuery([...closedStatusPairs, ["last_change_time", d14]], undefined, d7),
+        countQuery([...closedStatusPairs, ["last_change_time", d14], ...bcPairs], undefined, d7),
+      ])
+    : null;
+
+  const [coreRes, trendRes] = await Promise.all([corePromise, trendPromise]);
+
+  const result: Partial<DashboardStats> & { scope: DashboardStats["scope"]; generatedAt: string } = {
+    scope,
     generatedAt: new Date().toISOString(),
   };
+
+  if (coreRes) {
+    const [openTotal, openBlocker, openCritical, closedTotal, closedBlocker, closedCritical] = coreRes;
+    result.open = { total: openTotal, blocker: openBlocker, critical: openCritical };
+    result.closed = { total: closedTotal, blocker: closedBlocker, critical: closedCritical };
+  }
+  if (trendRes) {
+    const [filed7, filed7BC, filedPrev7, filedPrev7BC, closed7, closed7BC, closedPrev7, closedPrev7BC] = trendRes;
+    const last7d = { filed: filed7, filedBC: filed7BC, closed: closed7, closedBC: closed7BC };
+    const prev7d = { filed: filedPrev7, filedBC: filedPrev7BC, closed: closedPrev7, closedBC: closedPrev7BC };
+    result.trend = { last7d, prev7d, netFlowPerWeek: last7d.filed - last7d.closed };
+  }
+  return result;
 }
 
 // ── attachments (base64, for AI ingestion in milestone 2) ────────

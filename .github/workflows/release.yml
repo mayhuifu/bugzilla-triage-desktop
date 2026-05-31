@@ -73,6 +73,18 @@ jobs:
           npm_config_disturl: https://electronjs.org/headers
         run: npm ci
 
+      # Stage the bge-small-en-v1.5 ONNX + tokenizer into models/ so
+      # electron-builder bundles it (electron-builder.json copies models/ →
+      # resources/app/.next/standalone/models). WITHOUT this step the installer
+      # ships an EMPTY models/ dir (just .gitkeep), the query embedder can't
+      # load offline, and hybrid retrieval silently degrades to BM25. The
+      # download (~33 MB) runs on each OS runner; it's offline-loaded at runtime
+      # so the desktop never needs network for embeddings. (onnxruntime-node's
+      # napi-v6 prebuild is ABI-stable, so the Electron-targeted npm ci above
+      # doesn't affect it — only better-sqlite3 needs the electron prebuild.)
+      - name: Stage embedding model (bge-small-en-v1.5)
+        run: npm run fetch:model
+
       # Per-OS build target. `dist:win` etc. each chain `next build` first,
       # which writes .next/standalone — the payload electron-builder packs
       # into resources/app via extraResources (see electron-builder.json).

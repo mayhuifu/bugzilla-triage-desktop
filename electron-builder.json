@@ -53,6 +53,11 @@
       "from": "node_modules/sqlite-vec",
       "to": "app/.next/standalone/node_modules/sqlite-vec",
       "filter": ["**/*"]
+    },
+    {
+      "from": "models",
+      "to": "app/.next/standalone/models",
+      "filter": ["**/*"]
     }
   ],
 
@@ -69,6 +74,11 @@
       {
         "from": "node_modules/sqlite-vec-windows-x64",
         "to": "app/.next/standalone/node_modules/sqlite-vec-windows-x64",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "node_modules/onnxruntime-node/bin/napi-v6/win32/x64",
+        "to": "app/.next/standalone/node_modules/onnxruntime-node/bin/napi-v6/win32/x64",
         "filter": ["**/*"]
       }
     ]
@@ -98,6 +108,11 @@
         "from": "node_modules/sqlite-vec-darwin-arm64",
         "to": "app/.next/standalone/node_modules/sqlite-vec-darwin-arm64",
         "filter": ["**/*"]
+      },
+      {
+        "from": "node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64",
+        "to": "app/.next/standalone/node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64",
+        "filter": ["**/*"]
       }
     ]
   },
@@ -115,6 +130,11 @@
       {
         "from": "node_modules/sqlite-vec-linux-x64",
         "to": "app/.next/standalone/node_modules/sqlite-vec-linux-x64",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "node_modules/onnxruntime-node/bin/napi-v6/linux/x64",
+        "to": "app/.next/standalone/node_modules/onnxruntime-node/bin/napi-v6/linux/x64",
         "filter": ["**/*"]
       }
     ]

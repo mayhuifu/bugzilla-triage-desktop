@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { Logo } from "@/components/ui/Logo";
 import { CorpusSection } from "@/components/settings/CorpusSection";
+import { clearDashboardCache } from "@/lib/dashboard-cache";
 
 // Settings page — first thing a non-technical user sees on a fresh
 // install. Two sections (Bugzilla, AI Triage) plus the on-disk file
@@ -167,6 +168,12 @@ export default function SettingsPage() {
       setBugzillaApiKey("");      // clear write-only fields after save
       setAnthropicApiKey("");
       setSavedAt(Date.now());
+      // The Bugzilla connection may have changed — drop the client-side
+      // dashboard snapshot cache so returning to the dashboard re-fetches
+      // against the new connection instead of serving stale cached data.
+      // (The server-side cache is invalidated separately by the POST handler
+      // via bumpServerCacheVersion.)
+      clearDashboardCache();
       // Notify ThemeManager so the new theme applies immediately without
       // requiring a reload.
       try {

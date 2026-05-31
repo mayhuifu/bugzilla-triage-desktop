@@ -12,6 +12,70 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.5.0 — 3GPP Spec Workbench: standalone spec search + hybrid retrieval
+
+**Tagged:** —
+**Published:** —
+
+### Highlights
+
+Turns the app from an AI-triage tool into an engineer's all-day **workbench**. The headline is a brand-new **3GPP Specs** tab (`/spec`) — standalone spec search that is **NOT gated behind AI triage and needs no LLM**. It runs the local corpus's retrieval entirely offline (no API key, no network), so an engineer can look up clauses by topic, citation, or acronym any time.
+
+- **New "3GPP Specs" workbench page (`/spec`).** A search-first surface: type free text (`BWP switching after handover`), a citation (`TS 38.331 §5.3.5` → direct jump), or an acronym (`HARQ`). Ranked result cards open the existing resizable **SpecDrawer** (tables + inline figures + NOTE formatting from v0.4.x) on click. Deep-linkable: `/spec?q=…` reproduces a search, `/spec?clause=…` opens a clause directly.
+- **Header tabs.** A `Triage Queue` ⇄ `3GPP Specs` toggle now lives in the header of every page, so the two halves of the workbench are one click apart.
+- **Bundled hybrid embedder (the big retrieval upgrade).** The desktop now ships `bge-small-en-v1.5` (384-dim ONNX, ~22 MB quantised) via `@huggingface/transformers`, registered as the corpus query-time embedder. When the installed corpus was built with the **same** model, retrieval upgrades from keyword-only BM25 to **hybrid** (BM25 ⊕ dense vectors fused by Reciprocal Rank Fusion) — the same path the build-time eval measures. A `Hybrid retrieval` / `Keyword search` badge on the page (and `hybridActive` in `/api/corpus/status`) makes the active mode visible instead of silently degrading.
+- **Browse + acronym sidebar.** A left rail lets you browse all 36 curated specs (expand → drill into a spec's leaf clauses, natural-sorted), look up any of the 152 glossary acronyms, and jump back to **recently-viewed** clauses (localStorage).
+- **Cross-feature glue.** A **Research in 3GPP** button sits on the ticket detail header and next to **Run AI Triage** — one click opens `/spec` pre-loaded with the ticket's summary. Bridges triage ↔ knowledge lookup without leaving the app, and (being LLM-optional) works with no provider configured.
+
+### Why a corpus rebuild is required
+
+The desktop's bundled embedder and the corpus's build-time vectors **must share an embedding space** for cosine similarity to mean anything. The shipped `rel17-v4` corpus was embedded with `bge-m3` (1024-dim) — too large to bundle (570 MB ONNX). v0.5 bundles `bge-small-en-v1.5` (384-dim) instead, so the corpus must be **re-embedded and republished as `rel17-v5`** with bge-small. Until that lands, the desktop runs correctly on BM25 (the badge shows `Keyword search` and `/api/corpus/status` reports the model mismatch). The default corpus URL is pointed at `rel17-v5`; users on v4/v3/v2/v1 auto-upgrade on next launch.
+
+### Changes
+
+**Retrieval core**
+
+- `lib/corpus/retriever.ts` — new `retrieveByText(query, {limit})` (the raw-query counterpart to `retrieveContextAsync(ticket)`); extracted `tokenizeText` / `buildQueryFromText` so /spec search and triage tokenise identically; `bm25Retrieve` / `hybridRetrieve` now take a `limit`; new `activeRetrieverPath()` exposes the live `none|bm25-v1|bm25-v2|hybrid-rrf` decision; `decidePath()` lazily registers the bundled embedder.
+- `lib/corpus/embedder-bge.ts` (new) — `CorpusEmbedder` impl over `@huggingface/transformers`, `modelId="BAAI/bge-small-en-v1.5"`, CLS-pooled + L2-normalised 384-dim output. Loads the model lazily on first `embed()` from a bundled offline dir (`<cwd>/models/…`), falling back to a remote download in dev. Registered via `ensureBgeEmbedderRegistered()` from the node-only retriever (NOT `instrumentation.ts`, which is edge-compiled and can't resolve the native deps).
+- `lib/corpus/store.ts` — new read helpers `listSpecs()`, `listSpecClauses(spec)` (natural clause-number sort), `searchAcronyms(query)`.
+
+**API routes**
+
+- `app/api/corpus/search/route.ts` (new) — `GET ?q=&limit=` → citation-jump or free-text hybrid/BM25 results + `retrieverPath`/`hybridActive`.
+- `app/api/corpus/toc/route.ts` (new) — spec list, or one spec's clauses.
+- `app/api/corpus/acronym/route.ts` (new) — glossary lookup.
+- `app/api/corpus/status/route.ts` — now reports `retrieverPath`, `hybridActive`, `embeddingModel` (corpus) and `queryEmbedderModel` (bundled).
+
+**UI**
+
+- `app/spec/page.tsx` (new), `components/spec/{SpecSearchBox,SpecResultList,SpecResultCard,SpecAcronymPane,SpecTocSidebar}.tsx` (new), `components/ui/HeaderNav.tsx` (new) — wired into `app/page.tsx` + `app/tickets/[id]/page.tsx` + `components/triage/TriageChatPanel.tsx`.
+
+**Packaging**
+
+- `next.config.mjs` — externalised `@huggingface/transformers` + `onnxruntime-node`.
+- `electron-builder.json` — bundles `models/` + the per-OS ONNX Runtime native libs (the standalone trace grabs only the host platform's shared libs; the explicit per-OS copies guarantee the win/mac/linux binary loads).
+- `scripts/fetch-embed-model.mjs` (new) — stages the bge-small ONNX into `models/` before `dist:*` (`npm run fetch:model`). `scripts/spike-embedder.mjs` (new) — Phase-0 embedder smoke test.
+- `lib/settings.ts` — `DEFAULT_CORPUS_MANIFEST_URL` → `rel17-v5`; `rel17-v4` added to the legacy auto-upgrade set.
+
+### Maintainer build prerequisites (network-gated — run on a networked machine)
+
+The agent that built this release had no outbound network, so these final steps are **not done yet** and must be run before shipping:
+
+1. **Stage the embedder model** (once, before packaging): `npm run fetch:model` (downloads `bge-small-en-v1.5` into `models/`). Verify with `npm run spike:embedder` → expect a 384-dim, L2≈1.0 vector and `PASS`.
+2. **Rebuild the corpus as `rel17-v5`** (corpus repo): merge PR #3 (eval-queries fix) first, then `EMBED_MODEL=BAAI/bge-small-en-v1.5 npm run build` → confirm `meta.embeddingModel=BAAI/bge-small-en-v1.5`, `embeddingDim=384`. Publish: `npm run publish-corpus -- --tag rel17-v5`. Record the eval MRR@10 lift.
+3. **Verify the packaged build** on Windows: `npm run dist:win`, install, download the v5 corpus, hit `/api/corpus/status` → expect `hybridActive: true` (NOT a model mismatch), and the `/spec` badge should read `Hybrid retrieval`. This is the load-bearing de-risk (ONNX native-binary packaging) — dev-mode success ≠ packaged success.
+
+Fallback: if the packaged ONNX embedder can't be made to load, v0.5.0 still ships fully functional on **BM25** — the `/spec` UI is identical; only the badge differs.
+
+### Upgrade notes
+
+- **No settings migration.** v0.5 reads the same `settings.json`. The default corpus URL moves to `rel17-v5` and auto-upgrades users on the shipped default.
+- **Schema unchanged.** `rel17-v5` stays `schemaVersion=3` (figure images carried forward); only the embedding model changes. `SUPPORTED_SCHEMA_VERSIONS = {1,2,3}` already covers it.
+- **Installer size** grows by the ONNX runtime + model (~60 MB win / ~34 MB mac native libs + ~22 MB model). Documented tradeoff for hybrid search.
+- **Deferred to a later release:** "Create ticket about this clause" (needs a new-bug form the app doesn't have yet) and the optional "✨ Summarize for this ticket" LLM action (kept out to preserve the page's LLM-optional purity).
+
+---
+
 ## v0.4.1 — SpecDrawer polish: resizable width + readable NOTE rows
 
 **Tagged:** —

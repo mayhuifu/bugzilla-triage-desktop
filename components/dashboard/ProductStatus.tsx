@@ -28,13 +28,19 @@ export function ProductStatus({
     label: string; value: number; bucket: TicketBucket;
     icon: typeof Ticket; accent: string; glow: string;
   };
-  const cells: Cell[] = stats ? [
-    { label: "Open total",     value: stats.open.total,      bucket: "open",            icon: Ticket,        accent: "text-slate-200",  glow: "" },
-    { label: "Open Blocker",   value: stats.open.blocker,    bucket: "open-blocker",    icon: AlertOctagon,  accent: "text-red-400",    glow: "shadow-[0_0_20px_-6px_rgba(239,68,68,0.5)]" },
-    { label: "Open Critical",  value: stats.open.critical,   bucket: "open-critical",   icon: Flame,         accent: "text-orange-400", glow: "shadow-[0_0_20px_-6px_rgba(249,115,22,0.5)]" },
-    { label: "Closed total",   value: stats.closed.total,    bucket: "closed",          icon: CheckCircle2,  accent: "text-emerald-300", glow: "" },
-    { label: "Closed Blocker", value: stats.closed.blocker,  bucket: "closed-blocker",  icon: ShieldCheck,   accent: "text-emerald-300", glow: "" },
-    { label: "Closed Critical",value: stats.closed.critical, bucket: "closed-critical", icon: ShieldCheck,   accent: "text-emerald-300", glow: "" },
+  // Guard on `stats.open` specifically, not just `stats`: the dashboard
+  // loads the card counts ("core") and the trend bar separately and merges
+  // them into one object, so `stats` can briefly exist with `trend` but no
+  // `open`/`closed` (or vice-versa). Render the card skeletons until the
+  // core counts actually arrive.
+  const hasCore = !!(stats?.open && stats?.closed);
+  const cells: Cell[] = hasCore ? [
+    { label: "Open total",     value: stats!.open.total,      bucket: "open",            icon: Ticket,        accent: "text-slate-200",  glow: "" },
+    { label: "Open Blocker",   value: stats!.open.blocker,    bucket: "open-blocker",    icon: AlertOctagon,  accent: "text-red-400",    glow: "shadow-[0_0_20px_-6px_rgba(239,68,68,0.5)]" },
+    { label: "Open Critical",  value: stats!.open.critical,   bucket: "open-critical",   icon: Flame,         accent: "text-orange-400", glow: "shadow-[0_0_20px_-6px_rgba(249,115,22,0.5)]" },
+    { label: "Closed total",   value: stats!.closed.total,    bucket: "closed",          icon: CheckCircle2,  accent: "text-emerald-300", glow: "" },
+    { label: "Closed Blocker", value: stats!.closed.blocker,  bucket: "closed-blocker",  icon: ShieldCheck,   accent: "text-emerald-300", glow: "" },
+    { label: "Closed Critical",value: stats!.closed.critical, bucket: "closed-critical", icon: ShieldCheck,   accent: "text-emerald-300", glow: "" },
   ] : [];
 
   return (
@@ -42,7 +48,7 @@ export function ProductStatus({
       <div className="flex items-baseline justify-between mb-2">
         <h2 className="text-sm font-medium text-slate-300 flex items-center gap-2">
           Product status <span className="text-slate-500 font-normal">· {scopeLabel}</span>
-          {loading && stats && (
+          {loading && hasCore && (
             <span className="badge bg-accent/10 text-accent-glow ring-1 ring-accent/30 text-[10px] flex items-center gap-1">
               <Loader2 className="w-3 h-3 animate-spin" />
               refreshing
@@ -51,8 +57,8 @@ export function ProductStatus({
         </h2>
       </div>
 
-      <div className={`grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 transition-opacity ${loading && stats ? "opacity-50" : ""}`}>
-        {!stats && Array.from({ length: 6 }).map((_, i) => (
+      <div className={`grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 transition-opacity ${loading && hasCore ? "opacity-50" : ""}`}>
+        {!hasCore && Array.from({ length: 6 }).map((_, i) => (
           <div key={i} className="card p-4 animate-pulse">
             <div className="h-3 w-20 bg-bg-border rounded" />
             <div className="h-7 w-12 bg-bg-border rounded mt-3" />
@@ -104,17 +110,22 @@ export function TrendBar({
   activeBucket: TicketBucket | null;
   onSelectBucket: (bucket: TicketBucket | null) => void;
 }) {
-  if (!stats && !loading) return null;
+  // Guard on `stats.trend` specifically: the dashboard merges the
+  // separately-fetched "core" cards and "trend" bar into one object, so
+  // `stats` can exist with `open`/`closed` but no `trend` yet. Show the
+  // trend skeletons until the trend counts land.
+  const hasTrend = !!stats?.trend;
+  if (!hasTrend && !loading) return null;
 
   type Metric = { label: string; now: number; prev: number; higherIsWorse: boolean; bucket: TicketBucket };
-  const metrics: Metric[] = stats ? [
-    { label: "New filed",       now: stats.trend.last7d.filed,    prev: stats.trend.prev7d.filed,    higherIsWorse: true,  bucket: "last7d-filed" },
-    { label: "New filed (B+C)", now: stats.trend.last7d.filedBC,  prev: stats.trend.prev7d.filedBC,  higherIsWorse: true,  bucket: "last7d-filed-bc" },
-    { label: "Closed",          now: stats.trend.last7d.closed,   prev: stats.trend.prev7d.closed,   higherIsWorse: false, bucket: "last7d-closed" },
-    { label: "Closed (B+C)",    now: stats.trend.last7d.closedBC, prev: stats.trend.prev7d.closedBC, higherIsWorse: false, bucket: "last7d-closed-bc" },
+  const metrics: Metric[] = hasTrend ? [
+    { label: "New filed",       now: stats!.trend.last7d.filed,    prev: stats!.trend.prev7d.filed,    higherIsWorse: true,  bucket: "last7d-filed" },
+    { label: "New filed (B+C)", now: stats!.trend.last7d.filedBC,  prev: stats!.trend.prev7d.filedBC,  higherIsWorse: true,  bucket: "last7d-filed-bc" },
+    { label: "Closed",          now: stats!.trend.last7d.closed,   prev: stats!.trend.prev7d.closed,   higherIsWorse: false, bucket: "last7d-closed" },
+    { label: "Closed (B+C)",    now: stats!.trend.last7d.closedBC, prev: stats!.trend.prev7d.closedBC, higherIsWorse: false, bucket: "last7d-closed-bc" },
   ] : [];
 
-  const netFlow = stats?.trend.netFlowPerWeek ?? 0;
+  const netFlow = stats?.trend?.netFlowPerWeek ?? 0;
   const trajectory = formatTrajectory(netFlow);
 
   return (
@@ -122,14 +133,14 @@ export function TrendBar({
       <div className="flex items-baseline justify-between mb-2">
         <h2 className="text-sm font-medium text-slate-300 flex items-center gap-2">
           Last 7 days <span className="text-slate-500 font-normal">· vs previous 7 days</span>
-          {loading && stats && (
+          {loading && hasTrend && (
             <span className="badge bg-accent/10 text-accent-glow ring-1 ring-accent/30 text-[10px] flex items-center gap-1">
               <Loader2 className="w-3 h-3 animate-spin" />
               refreshing
             </span>
           )}
         </h2>
-        {stats && (
+        {hasTrend && (
           <div className={`text-[11px] flex items-center gap-1.5 ${trajectory.tone}`}>
             <trajectory.Icon className="w-3.5 h-3.5" />
             <span className="font-medium">{trajectory.label}</span>
@@ -137,8 +148,8 @@ export function TrendBar({
         )}
       </div>
 
-      <div className={`grid grid-cols-2 md:grid-cols-4 gap-3 transition-opacity ${loading && stats ? "opacity-50" : ""}`}>
-        {!stats && Array.from({ length: 4 }).map((_, i) => (
+      <div className={`grid grid-cols-2 md:grid-cols-4 gap-3 transition-opacity ${loading && hasTrend ? "opacity-50" : ""}`}>
+        {!hasTrend && Array.from({ length: 4 }).map((_, i) => (
           <div key={i} className="card p-4 animate-pulse">
             <div className="h-3 w-20 bg-bg-border rounded" />
             <div className="h-7 w-12 bg-bg-border rounded mt-3" />

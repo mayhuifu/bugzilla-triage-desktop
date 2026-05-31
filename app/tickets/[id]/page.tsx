@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
-import { AlertCircle, GripVertical, Loader2 } from "lucide-react";
+import { AlertCircle, GripVertical, Loader2, BookText } from "lucide-react";
 import type { TicketDetail } from "@/lib/types";
 import { Logo } from "@/components/ui/Logo";
 import Link from "next/link";
@@ -115,6 +115,19 @@ export default function TicketDetailPage() {
               <span>Ticket #{id}</span>
             </div>
           </div>
+          {/* Cross-feature glue (v0.5): jump to the 3GPP workbench with this
+              ticket's summary pre-loaded as the search. Runs locally — no LLM
+              needed — so it works even without a provider configured. */}
+          {ticket && (
+            <Link
+              href={`/spec?q=${encodeURIComponent(ticket.summary)}`}
+              className="btn-secondary text-xs py-1.5 px-3"
+              title="Search the local 3GPP corpus for clauses related to this ticket (no LLM required)"
+            >
+              <BookText className="w-3.5 h-3.5" />
+              Research in 3GPP
+            </Link>
+          )}
         </div>
       </header>
 

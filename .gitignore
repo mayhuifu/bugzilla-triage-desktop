@@ -14,3 +14,10 @@ __pycache__/
 
 # Never commit a local copy of .mcp.json with credentials
 .mcp.json
+
+# Bundled bge embedding model (staged by scripts/fetch-embed-model.mjs before
+# `dist:*`). ~22 MB of binary ONNX + tokenizer — shipped inside the installer,
+# not via git. Keep the dir (.gitkeep) so electron-builder's `from: "models"`
+# resolves even when the model hasn't been staged yet.
+/models/*
+!/models/.gitkeep

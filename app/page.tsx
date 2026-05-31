@@ -9,11 +9,15 @@ import type {
 } from "@/lib/types";
 import { BUCKET_LABELS } from "@/lib/types";
 import { Logo } from "@/components/ui/Logo";
+import { HeaderNav } from "@/components/ui/HeaderNav";
 import { CorpusInstallBanner } from "@/components/corpus/CorpusInstallBanner";
 import { ProductStatus, TrendBar } from "@/components/dashboard/ProductStatus";
 import { TicketFilters, type FilterState } from "@/components/dashboard/TicketFilters";
 import { TicketTable } from "@/components/dashboard/TicketTable";
 import { SavedFilters } from "@/components/dashboard/SavedFilters";
+import {
+  getCachedStats, setCachedStats, getCachedTickets, setCachedTickets,
+} from "@/lib/dashboard-cache";
 
 const DEFAULT_PRODUCT = "U300";
 const PAGE_SIZE = 25;          // initial number of tickets shown
@@ -32,7 +36,8 @@ export default function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
 
   const [loadingTickets, setLoadingTickets] = useState(true);
-  const [loadingStats, setLoadingStats] = useState(true);
+  const [loadingStats, setLoadingStats] = useState(true);  // the 6 open/closed cards
+  const [loadingTrend, setLoadingTrend] = useState(true);  // the 8 trend-bar queries
   const [error, setError] = useState<string | null>(null);
   const [source, setSource] = useState<string>("loading");
 
@@ -46,6 +51,14 @@ export default function Dashboard() {
   // user hasn't entered Bugzilla credentials yet (show banner + skip fetches),
   // `true` once /api/settings reports the connection is configured.
   const [configured, setConfigured] = useState<boolean | null>(null);
+  // Gate for the data-loading effects. Stays false until the bootstrap has
+  // settled the default scope (products fetched + DEFAULT_PRODUCT applied).
+  // Without this, the effects fire once with the EMPTY "all-products" scope
+  // — the slowest possible stats query (counts every product) — and then
+  // immediately re-fire for the U300 default, doing (and on a cold cache,
+  // waiting on) a big query whose result is instantly discarded. Gating
+  // here means stats/tickets load exactly once, for the real scope.
+  const [scopeReady, setScopeReady] = useState(false);
   // Clicking a card in ProductStatus sets a bucket which overrides the
   // severity/status dropdowns server-side. Null = card filter inactive.
   const [bucket, setBucket] = useState<TicketBucket | null>(null);
@@ -132,6 +145,10 @@ export default function Dashboard() {
           setFilters(f => f.product ? f : { ...f, product: DEFAULT_PRODUCT });
         }
         if (w?.login) setWhoami(w);
+        // Scope is now settled (default product applied if available) — let
+        // the data effects fire once, for the real scope. Batched with the
+        // setFilters above so serverQuery already reflects the default.
+        setScopeReady(true);
       });
     }).catch(() => {
       // Settings endpoint should never fail; if it does, assume not configured.
@@ -141,7 +158,19 @@ export default function Dashboard() {
   }, []);
 
   // ── Load tickets when ticketQuery changes ────────────────────────────
-  const loadTickets = useCallback(async (qs: string) => {
+  const loadTickets = useCallback(async (qs: string, fresh = false) => {
+    // Serve from the client snapshot cache on navigation-back (≤24h) so the
+    // list shows instantly without a re-fetch. Refresh (fresh) bypasses it.
+    if (!fresh) {
+      const cachedT = getCachedTickets(qs);
+      if (cachedT) {
+        setTickets(cachedT.tickets);
+        setSource(cachedT.source);
+        setError(null);
+        setLoadingTickets(false);
+        return;
+      }
+    }
     setLoadingTickets(true);
     setError(null);
     try {
@@ -150,6 +179,11 @@ export default function Dashboard() {
       setTickets(data.tickets || []);
       setSource(data.source || "unknown");
       if (data.error) setError(data.error);
+      // Cache only real Bugzilla results — never pin a mock / mock-fallback
+      // page (which would otherwise survive for 24h once Bugzilla recovers).
+      if (!data.error && data.source === "bugzilla-mcp") {
+        setCachedTickets(qs, { tickets: data.tickets || [], source: data.source });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load tickets");
     } finally {
@@ -157,17 +191,80 @@ export default function Dashboard() {
     }
   }, []);
 
-  const loadStats = useCallback(async (qs: string) => {
-    setLoadingStats(true);
-    try {
-      const res = await fetch(`/api/stats${qs ? `?${qs}` : ""}`);
-      const data: DashboardStats = await res.json();
-      setStats(data);
-    } catch {
-      setStats(null);
-    } finally {
-      setLoadingStats(false);
+  const loadStats = useCallback((qs: string, fresh = false) => {
+    // Navigation-back fast path: hydrate instantly from the client snapshot
+    // cache (≤24h) — no fetch, no skeleton flash. Refresh (fresh) skips it.
+    if (!fresh) {
+      const cachedS = getCachedStats(qs);
+      if (cachedS) {
+        setStats(cachedS);
+        setLoadingStats(false);
+        setLoadingTrend(false);
+        return;
+      }
     }
+
+    // Split load: the 6 open/closed card counts ("core") and the 8
+    // week-over-week trend counts ("trend") are fetched as two independent
+    // requests so the cards paint as soon as 6 queries finish instead of
+    // waiting for all 14. `fresh` (Refresh button) bypasses the server cache
+    // too. Results merge into one `stats` object so the components read
+    // open/closed/trend as before — they guard each sub-field since either
+    // part can land first. Once BOTH real (non-mock) parts land we cache the
+    // complete snapshot for instant navigation-back.
+    const build = (part: "core" | "trend") => {
+      const p = new URLSearchParams(qs);
+      p.set("part", part);
+      if (fresh) p.set("fresh", "1");
+      return `/api/stats?${p.toString()}`;
+    };
+    const acc: Partial<DashboardStats> = {};
+    let coreReal = false, trendReal = false;
+    const maybeCache = () => {
+      if (coreReal && trendReal && acc.open && acc.closed && acc.trend && acc.scope && acc.generatedAt) {
+        setCachedStats(qs, acc as DashboardStats);
+      }
+    };
+
+    setLoadingStats(true);
+    fetch(build("core"))
+      .then(r => r.json())
+      .then((core: Partial<DashboardStats> & { source?: string }) => {
+        coreReal = core.source === "bugzilla-mcp";
+        acc.scope = core.scope ?? acc.scope;
+        acc.open = core.open;
+        acc.closed = core.closed;
+        acc.generatedAt = core.generatedAt ?? acc.generatedAt;
+        setStats(prev => ({
+          ...(prev ?? {}),
+          scope: core.scope ?? prev?.scope,
+          open: core.open,
+          closed: core.closed,
+          generatedAt: core.generatedAt ?? prev?.generatedAt,
+        } as DashboardStats));
+        maybeCache();
+      })
+      .catch(() => { /* keep prior cards; loading flag clears below */ })
+      .finally(() => setLoadingStats(false));
+
+    setLoadingTrend(true);
+    fetch(build("trend"))
+      .then(r => r.json())
+      .then((t: Partial<DashboardStats> & { source?: string }) => {
+        trendReal = t.source === "bugzilla-mcp";
+        acc.scope = t.scope ?? acc.scope;
+        acc.trend = t.trend;
+        acc.generatedAt = t.generatedAt ?? acc.generatedAt;
+        setStats(prev => ({
+          ...(prev ?? {}),
+          scope: t.scope ?? prev?.scope,
+          trend: t.trend,
+          generatedAt: t.generatedAt ?? prev?.generatedAt,
+        } as DashboardStats));
+        maybeCache();
+      })
+      .catch(() => { /* keep prior trend; loading flag clears below */ })
+      .finally(() => setLoadingTrend(false));
   }, []);
 
   // When the scope (excluding limit) changes, reset pagination to page 1.
@@ -175,17 +272,17 @@ export default function Dashboard() {
   // Both gate on `configured === true` so we don't hit the API on first
   // run before the user has entered Bugzilla credentials.
   useEffect(() => {
-    if (!configured) return;
+    if (!scopeReady) return;
     if (filters.myTickets && !whoami?.login) return;
     setTicketLimit(PAGE_SIZE);
     loadStats(serverQuery);
-  }, [configured, serverQuery, filters.myTickets, whoami?.login, loadStats]);
+  }, [scopeReady, serverQuery, filters.myTickets, whoami?.login, loadStats]);
 
   useEffect(() => {
-    if (!configured) return;
+    if (!scopeReady) return;
     if (filters.myTickets && !whoami?.login) return;
     loadTickets(ticketQuery);
-  }, [configured, ticketQuery, filters.myTickets, whoami?.login, loadTickets]);
+  }, [scopeReady, ticketQuery, filters.myTickets, whoami?.login, loadTickets]);
 
   // ── Direct ticket-ID lookup ──────────────────────────────────────────
   // When the user types a pure numeric query (e.g. "14553"), the client-
@@ -317,8 +414,11 @@ export default function Dashboard() {
   }, [filters.product, filters.component, filters.myTickets, whoami?.login]);
 
   const refreshAll = useCallback(() => {
-    loadTickets(ticketQuery);
-    loadStats(serverQuery);
+    // The Refresh button is the explicit "give me current data" action — it
+    // bypasses BOTH the client snapshot cache and the 24h server cache for
+    // tickets and stats alike.
+    loadTickets(ticketQuery, /*fresh=*/ true);
+    loadStats(serverQuery, /*fresh=*/ true);
   }, [ticketQuery, serverQuery, loadTickets, loadStats]);
 
   // Bucket selection from ProductStatus cards. Clears the severity/status
@@ -400,7 +500,10 @@ export default function Dashboard() {
     <div className="min-h-screen">
       <header className="border-b border-bg-border bg-bg-panel/60 backdrop-blur-sm sticky top-0 z-20">
         <div className="max-w-[1600px] mx-auto px-6 h-14 flex items-center justify-between">
-          <Logo />
+          <div className="flex items-center">
+            <Logo />
+            <HeaderNav />
+          </div>
           <div className="flex items-center gap-3">
             {whoami?.login && (
               <span className="text-[11px] text-slate-500">
@@ -524,7 +627,7 @@ export default function Dashboard() {
 
         <TrendBar
           stats={stats}
-          loading={loadingStats}
+          loading={loadingTrend}
           activeBucket={bucket}
           onSelectBucket={handleSelectBucket}
         />

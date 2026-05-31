@@ -26,7 +26,19 @@ const nextConfig = {
   // its worker-file path confuse webpack's bundler. The legacy build
   // runs fine via a runtime import() against the unpacked node_modules,
   // and keeping it external avoids a fat bundle.
-  serverExternalPackages: ["better-sqlite3", "pdfjs-dist"],
+  //
+  // @huggingface/transformers + onnxruntime-node back the query-time bge
+  // embedder (v0.5 hybrid retrieval). onnxruntime-node ships per-platform
+  // `.node` binaries the bundler can't process — same class as
+  // better-sqlite3 — so both must be externalized and loaded at runtime
+  // via import() against the unpacked .next/standalone/node_modules (which
+  // electron-builder copies in via extraResources).
+  serverExternalPackages: [
+    "better-sqlite3",
+    "pdfjs-dist",
+    "@huggingface/transformers",
+    "onnxruntime-node",
+  ],
   env: {
     NEXT_PUBLIC_APP_VERSION: pkg.version,
   },

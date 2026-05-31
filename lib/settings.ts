@@ -114,25 +114,32 @@ interface StoredEnvelope {
   settings: Settings;
 }
 
-/** Default corpus manifest URL — the published rel17-v4 manifest on
- *  github.com/mayhuifu/bugzilla-triage-corpus. v4 adds inline figure
- *  images (1,128 SVG/PNG/JPEG blobs, ~66 MB) on top of v3's clauses
- *  + structured tables + hybrid retrieval. Total: 12,930 leaf clauses
- *  + 17,490 structured tables + 1,128 figure images across 36 specs,
- *  ~68 MB gzipped / ~226 MB uncompressed. */
+/** Default corpus manifest URL — the published rel17-v5 manifest on
+ *  github.com/mayhuifu/bugzilla-triage-corpus. v5 re-embeds the corpus
+ *  with BAAI/bge-small-en-v1.5 (384-dim) so the desktop's bundled
+ *  query-time embedder produces vectors in the SAME space → real hybrid
+ *  (BM25 ⊕ dense ⊕ RRF) retrieval instead of the BM25 fallback the
+ *  bge-m3 (1024-dim) v4 corpus forced. Everything else (12,930 leaf
+ *  clauses, structured tables, 1,128 figure images, schemaVersion=3) is
+ *  carried forward unchanged from v4. */
 const DEFAULT_CORPUS_MANIFEST_URL =
-  "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v4/3gpp-corpus-rel17-v4-2026-05.manifest.json";
+  "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v5/3gpp-corpus-rel17-v5-2026-05.manifest.json";
 
 /** Legacy default URLs we've shipped. When a user's saved settings.json
  *  still has one of these (i.e. they accepted the default at install
  *  time and never edited it), we silently upgrade to the current default
  *  on load. Users who DID customise the URL (e.g. internal mirror) keep
  *  their value — we only rewrite if it's an exact match for a previous
- *  shipped default. */
+ *  shipped default.
+ *
+ *  Note: v4 is included here so users on the bge-m3 corpus auto-upgrade to
+ *  the bge-small v5 corpus that matches the bundled embedder. (Staying on
+ *  v4 is harmless — it just runs BM25 — but v5 unlocks hybrid.) */
 const LEGACY_DEFAULT_CORPUS_MANIFEST_URLS = new Set([
   "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v1/3gpp-corpus-rel17-v1-2026-05.manifest.json",
   "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v2/3gpp-corpus-rel17-v2-2026-05.manifest.json",
   "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v3/3gpp-corpus-rel17-v3-2026-05.manifest.json",
+  "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v4/3gpp-corpus-rel17-v4-2026-05.manifest.json",
 ]);
 
 const EMPTY_SETTINGS: Settings = {
