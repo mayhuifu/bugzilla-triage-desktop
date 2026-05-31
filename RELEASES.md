@@ -14,8 +14,8 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ## v0.5.0 — 3GPP Spec Workbench: standalone spec search + hybrid retrieval
 
-**Tagged:** —
-**Published:** —
+**Tagged:** 2026-05-31
+**Published:** 2026-05-31 — https://github.com/mayhuifu/bugzilla-triage-desktop/releases/tag/v0.5.0 (corpus `rel17-v5`)
 
 ### Highlights
 
