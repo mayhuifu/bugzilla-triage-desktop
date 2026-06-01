@@ -12,6 +12,45 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.5.1 — Spec drawer: figure & table rendering fixes
+
+**Tagged:** 2026-06-01
+**Published:** 2026-06-01
+
+### Highlights
+
+Polish pass on the 3GPP spec drawer (`SpecDrawer`), all rendering-side — no
+corpus rebuild. Found while spot-checking real clauses (`38.133 §3.5.2`,
+`36.133 §8.20.2.1`, `38.101-1 §6.3.3.6`):
+
+- **Duplicate NOTE lines removed.** A clause's `NOTE N:` prose was rendered
+  once in the body and again as the table's note section. The body now drops
+  any `NOTE N:` line whose number also appears under a table (matched by
+  number, since 3GPP packs all notes into one concatenated cell); notes that
+  belong to no table stay.
+- **Multi-table layout — table under its title.** Clauses with several tables
+  (e.g. 9 in `36.133 §8.20.2.1`) listed all `Table N:` titles at the top and
+  all tables at the bottom. Each table now renders directly under its title
+  line (used as the caption, which also fixes mangled `a:` captions). Falls
+  back to the stacked layout when titles don't map 1:1 to tables.
+- **Figures now render on figures-only clauses.** The Figures section was
+  nested inside the structured-tables branch, so a clause with figures but no
+  tables (`38.101-1 §6.3.3.6`) showed none. Extracted to a shared
+  `ClauseFigures` rendered in both branches. Standalone `Figure N:` caption
+  lines are also stripped from the body (kept inline "See Figure …" refs).
+- **SVG figures scale-match PNGs.** soffice exported each diagram on a full
+  US-Letter page, so SVGs floated tiny while sibling PNGs filled the width.
+  The figure API now crops the SVG `viewBox` to its drawn content (union of
+  LibreOffice `class="BoundingBox"` rects) and drops the page-sized
+  width/height — pure serve-time string rewrite, raster images untouched.
+- **Transient figure loads no longer vanish.** A figure's `onError` used to
+  hide it permanently; it now retries once (cache-buster) before hiding, so a
+  momentary blip doesn't drop a figure whose blob is fine.
+
+No schema or corpus change — still `rel17-v5`.
+
+---
+
 ## v0.5.0 — 3GPP Spec Workbench: standalone spec search + hybrid retrieval
 
 **Tagged:** 2026-05-31

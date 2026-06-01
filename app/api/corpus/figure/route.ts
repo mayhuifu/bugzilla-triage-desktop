@@ -24,6 +24,63 @@ import { getFigureImageBlob } from "@/lib/corpus/store";
 
 export const dynamic = "force-dynamic";
 
+/** Crop a LibreOffice page-export SVG to its drawn content.
+ *
+ *  The WMF/EMF → SVG conversion (soffice, in the corpus build) emits the
+ *  figure on a full US-Letter canvas: `width="215.9mm" height="279.4mm"`,
+ *  `viewBox="0 0 21590 27940"`, with the actual diagram a small band in the
+ *  vertical middle. Rendered as-is, the diagram looks tiny and off-centre
+ *  while the sibling PNGs (tight crops) fill the width — the scale mismatch
+ *  the user reported.
+ *
+ *  LibreOffice helpfully tags the drawn extents with `class="BoundingBox"`
+ *  rects. We union them to get the content box, rewrite the root viewBox to
+ *  it (+ small padding), and drop the page-sized width/height so the <img>
+ *  adopts the cropped (landscape) aspect ratio and scales to fill. Pure
+ *  string rewrite — no SVG renderer needed. Returns null (serve original)
+ *  when there are no BoundingBox markers or the content already fills the
+ *  page. */
+function cropPageSvg(buf: Uint8Array): string | null {
+  try {
+    const svg = Buffer.from(buf).toString("utf8");
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, n = 0;
+    for (const m of svg.matchAll(/<rect\b[^>]*class="BoundingBox"[^>]*>/g)) {
+      const tag = m[0];
+      const num = (re: RegExp): number => {
+        const hit = re.exec(tag);
+        return hit ? parseFloat(hit[1]) : NaN;
+      };
+      const x = num(/\bx="([\d.-]+)"/), y = num(/\by="([\d.-]+)"/);
+      const w = num(/\bwidth="([\d.-]+)"/), h = num(/\bheight="([\d.-]+)"/);
+      if ([x, y, w, h].some(Number.isNaN) || w <= 0 || h <= 0) continue;
+      n++;
+      minX = Math.min(minX, x); minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
+    }
+    if (n === 0) return null;
+
+    const pvb = /viewBox="([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)"/.exec(svg);
+    if (!pvb) return null;
+    const pageW = parseFloat(pvb[3]), pageH = parseFloat(pvb[4]);
+    const cw = maxX - minX, ch = maxY - minY;
+    if (!(cw > 0 && ch > 0)) return null;
+    // Already (nearly) full-bleed → nothing to gain from cropping.
+    if (cw >= pageW * 0.92 && ch >= pageH * 0.92) return null;
+
+    const pad = Math.max(cw, ch) * 0.03;
+    const vb = `${(minX - pad).toFixed(1)} ${(minY - pad).toFixed(1)} ${(cw + pad * 2).toFixed(1)} ${(ch + pad * 2).toFixed(1)}`;
+    let out = svg.replace(/(<svg\b[^>]*?)\sviewBox="[^"]*"/, `$1 viewBox="${vb}"`);
+    // Strip the page-sized width/height from the root <svg> only (the leading
+    // \s guard skips `stroke-width`; child <rect> width/height keep their own
+    // attrs since this replaces just the first, svg-tag, occurrence).
+    out = out.replace(/(<svg\b[^>]*?)\swidth="[^"]*"/, "$1");
+    out = out.replace(/(<svg\b[^>]*?)\sheight="[^"]*"/, "$1");
+    return out === svg ? null : out;
+  } catch {
+    return null;
+  }
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const clauseId = url.searchParams.get("clauseId");
@@ -41,21 +98,22 @@ export async function GET(req: Request) {
       { status: 404 },
     );
   }
-  // Node's Buffer is a Uint8Array subclass and runtime-valid as a
-  // BodyInit / BlobPart — but TypeScript's lib types since 5.7 narrow
-  // `BlobPart` to `ArrayBufferView<ArrayBuffer>` rather than
-  // `ArrayBufferView<ArrayBufferLike>`, and Node's Buffer is
-  // `ArrayBufferLike` (might be backed by SharedArrayBuffer). The
-  // copy-into-a-fresh-Uint8Array path forces a non-shared ArrayBuffer
-  // so the type narrows correctly. Cost: one extra memcpy per image
-  // (≤ 75 KB for a typical SVG; negligible).
-  const fresh = new Uint8Array(hit.data.byteLength);
-  fresh.set(hit.data);
-  return new NextResponse(fresh, {
+  // For LibreOffice page-export SVGs, crop the viewBox to the drawn content
+  // so the diagram fills the frame instead of floating tiny on a full page.
+  // Falls back to the original bytes for raster images and uncroppable SVGs.
+  const cropped = hit.mimeType === "image/svg+xml" ? cropPageSvg(hit.data) : null;
+  const src = cropped !== null ? new TextEncoder().encode(cropped) : hit.data;
+  // Copy into a fresh Uint8Array: forces a non-shared ArrayBuffer so the
+  // value narrows to the BodyInit-compatible type (TS 5.7+ rejects Node's
+  // Buffer / `ArrayBufferLike`-backed views). One extra memcpy per image
+  // (≤ ~75 KB for a typical SVG; negligible).
+  const body = new Uint8Array(src.byteLength);
+  body.set(src);
+  return new NextResponse(body, {
     status: 200,
     headers: {
       "Content-Type": hit.mimeType,
-      "Content-Length": String(hit.data.byteLength),
+      "Content-Length": String(body.byteLength),
       // The corpus SQLite is immutable for a given installed version.
       // Long private cache is safe because the bytes never change for
       // (clauseId, figureId); a new corpus version installs to a

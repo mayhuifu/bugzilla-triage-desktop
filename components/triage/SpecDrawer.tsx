@@ -391,83 +391,61 @@ function specLandingUrl(citation: string): string | null {
 function ClauseBody({ clause }: { clause: ClauseResponse }) {
   const hasStructuredTables = (clause.tables?.length ?? 0) > 0;
   if (hasStructuredTables) {
-    const cleaned = stripPipeRows(clause.text);
+    const cleaned = stripFigureCaptionLines(
+      cleanClauseBody(clause.text, clause.tables!),
+      clause.figures,
+    );
+    // Interleave each structured table directly after its "Table N: …" title
+    // line in the prose, so a table sits with its name instead of all titles
+    // bunching at the top and all tables at the bottom. Returns null (→ the
+    // old all-prose-then-all-tables layout) when the title lines don't map
+    // 1:1 to the tables, so we never mis-pair.
+    const segments = interleaveTables(cleaned, clause.tables!);
     return (
       <div className="text-xs text-slate-200 leading-relaxed space-y-3">
-        {cleaned && (
-          <pre className="whitespace-pre-wrap font-mono leading-relaxed">
-            {cleaned}
-          </pre>
-        )}
-        {clause.tables!.map((t, i) => (
-          <div key={t.id || i}>
-            {t.caption && (
-              <div className="text-[11px] text-slate-400 font-medium mb-1">
-                {t.caption}
+        {segments ? (
+          segments.map((seg, i) =>
+            seg.kind === "table" ? (
+              <div key={i}>
+                {seg.caption && (
+                  <div className="text-[11px] text-slate-400 font-medium mb-1">
+                    {seg.caption}
+                  </div>
+                )}
+                <ClauseTable rows={seg.rows} />
               </div>
+            ) : (
+              <pre key={i} className="whitespace-pre-wrap font-mono leading-relaxed">
+                {seg.text}
+              </pre>
+            ),
+          )
+        ) : (
+          <>
+            {cleaned && (
+              <pre className="whitespace-pre-wrap font-mono leading-relaxed">
+                {cleaned}
+              </pre>
             )}
-            <ClauseTable rows={t.rows} />
-          </div>
-        ))}
-        {(clause.figures?.length ?? 0) > 0 && (
-          <div className="space-y-3 pt-2 border-t border-bg-border/30">
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">
-              Figures
-            </div>
-            {clause.figures!.map((f, i) => {
-              // Pair the caption with the v3 image-blob entry. The
-              // figure_id used in the API URL matches the figure's
-              // `id` field exactly (composite of clauseId + Figure-N).
-              const hasImage = (clause.figureImages ?? []).some(img => img.figureId === f.id);
-              const captionShort = f.id.split("/").pop();
-              return (
-                <figure
-                  key={f.id || i}
-                  className="bg-bg-panel/40 rounded-md border border-bg-border/40 overflow-hidden"
-                >
-                  {hasImage && (
-                    // eslint-disable-next-line @next/next/no-img-element --
-                    // proxy URL pattern with dynamic clauseId/figureId;
-                    // next/image can't precompute these. The native
-                    // <img> handles SVG/PNG/JPEG uniformly and the
-                    // browser respects our private cache header.
-                    <img
-                      src={
-                        `/api/corpus/figure?clauseId=${encodeURIComponent(clause.clauseId)}` +
-                        `&figureId=${encodeURIComponent(f.id)}`
-                      }
-                      alt={f.caption || captionShort || "figure"}
-                      className="w-full max-h-[480px] object-contain bg-white/95 p-2"
-                      loading="lazy"
-                      onError={e => {
-                        // 404 from the route (figure not in corpus, or
-                        // file pruned mid-session). Hide the broken
-                        // image; the caption row below still renders.
-                        (e.currentTarget as HTMLImageElement).style.display = "none";
-                      }}
-                    />
-                  )}
-                  <figcaption className="px-2 py-1.5 text-[11px] text-slate-400 italic border-t border-bg-border/30 bg-bg-panel/80">
-                    <span className="font-mono not-italic text-slate-300">
-                      {captionShort}
-                    </span>
-                    {f.caption && <span>: {f.caption}</span>}
-                    {!hasImage && (
-                      <span className="ml-2 text-slate-600 not-italic">
-                        (caption only — image not in corpus)
-                      </span>
-                    )}
-                  </figcaption>
-                </figure>
-              );
-            })}
-          </div>
+            {clause.tables!.map((t, i) => (
+              <div key={t.id || i}>
+                {t.caption && (
+                  <div className="text-[11px] text-slate-400 font-medium mb-1">
+                    {t.caption}
+                  </div>
+                )}
+                <ClauseTable rows={t.rows} />
+              </div>
+            ))}
+          </>
         )}
+        <ClauseFigures clause={clause} />
       </div>
     );
   }
-  // Fallback: parse pipe-row segments client-side (v1 corpus path).
-  const segments = parseClauseSegments(clause.text);
+  // Fallback: parse pipe-row segments client-side (v1 corpus path, and v3
+  // clauses that have figures but no tables — e.g. 38.101-1 §6.3.3.6).
+  const segments = parseClauseSegments(stripFigureCaptionLines(clause.text, clause.figures));
   return (
     <div className="text-xs text-slate-200 leading-relaxed space-y-3">
       {segments.map((seg, i) =>
@@ -482,17 +460,181 @@ function ClauseBody({ clause }: { clause: ClauseResponse }) {
           </pre>
         ),
       )}
+      {/* Figures render regardless of whether the clause has tables — a
+          figures-only clause (e.g. 38.101-1 §6.3.3.6) still lands here. */}
+      <ClauseFigures clause={clause} />
     </div>
   );
 }
 
-/** Drop lines that look like pipe-separated table cells. Conservative —
- *  only matches lines whose first non-whitespace character is `|`. Keeps
- *  prose containing literal pipes (e.g. command examples mid-sentence). */
-function stripPipeRows(text: string): string {
+/** The inline Figures section: pairs each `figures_json` caption with its
+ *  image blob (served by /api/corpus/figure) and renders SVG/PNG/JPEG
+ *  uniformly. Shown for ANY clause that has figures — extracted from the
+ *  structured-tables branch so figures-only clauses (no tables) render them
+ *  too. Captions with no blob show a "caption only" hint. */
+function ClauseFigures({ clause }: { clause: ClauseResponse }) {
+  if ((clause.figures?.length ?? 0) === 0) return null;
+  return (
+    <div className="space-y-3 pt-2 border-t border-bg-border/30">
+      <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">
+        Figures
+      </div>
+      {clause.figures!.map((f, i) => {
+        // Pair the caption with the v3 image-blob entry. The figure_id used
+        // in the API URL matches the figure's `id` field exactly (composite
+        // of clauseId + Figure-N).
+        const hasImage = (clause.figureImages ?? []).some(img => img.figureId === f.id);
+        const captionShort = f.id.split("/").pop();
+        return (
+          <figure
+            key={f.id || i}
+            className="bg-bg-panel/40 rounded-md border border-bg-border/40 overflow-hidden"
+          >
+            {hasImage && (
+              // eslint-disable-next-line @next/next/no-img-element --
+              // proxy URL pattern with dynamic clauseId/figureId; next/image
+              // can't precompute these. The native <img> handles
+              // SVG/PNG/JPEG uniformly and the browser respects our private
+              // cache header.
+              <img
+                src={
+                  `/api/corpus/figure?clauseId=${encodeURIComponent(clause.clauseId)}` +
+                  `&figureId=${encodeURIComponent(f.id)}`
+                }
+                alt={f.caption || captionShort || "figure"}
+                className="w-full max-h-[480px] object-contain bg-white/95 p-2"
+                loading="lazy"
+                onError={e => {
+                  // Retry once before giving up: a transient failure (server
+                  // restarting, momentary blip) would otherwise permanently
+                  // hide a figure whose blob is perfectly fine, until reload.
+                  // The cache-buster forces a fresh request past any cached
+                  // error. Only a genuine 404 (image not in corpus) hides it
+                  // — and the caption row below still renders either way.
+                  const img = e.currentTarget as HTMLImageElement;
+                  if (img.dataset.retried) {
+                    img.style.display = "none";
+                    return;
+                  }
+                  img.dataset.retried = "1";
+                  const sep = img.src.includes("?") ? "&" : "?";
+                  img.src = `${img.src}${sep}_retry=1`;
+                }}
+              />
+            )}
+            <figcaption className="px-2 py-1.5 text-[11px] text-slate-400 italic border-t border-bg-border/30 bg-bg-panel/80">
+              <span className="font-mono not-italic text-slate-300">
+                {captionShort}
+              </span>
+              {f.caption && <span>: {f.caption}</span>}
+              {!hasImage && (
+                <span className="ml-2 text-slate-600 not-italic">
+                  (caption only — image not in corpus)
+                </span>
+              )}
+            </figcaption>
+          </figure>
+        );
+      })}
+    </div>
+  );
+}
+
+type BodySegment =
+  | { kind: "prose"; text: string }
+  | { kind: "table"; caption: string; rows: string[][] };
+
+/** Matches a 3GPP table TITLE line — "Table 8.20.2.1-1: <name>" — at the
+ *  start of a line. Case-sensitive capital "Table" + a number token + colon,
+ *  so it won't catch mid-sentence inline references ("as shown in table
+ *  8.20.2.1-5 …"). */
+const TABLE_TITLE_RE = /^Table\s+[\w.\-]+\s*:/;
+
+/** Interleave the structured tables into the prose at their title lines, so
+ *  each table renders right under its "Table N: …" heading instead of all
+ *  titles stacking at the top and all tables at the bottom (the disconnect
+ *  the user hit on multi-table clauses like 36.133 §8.20.2.1, 9 tables).
+ *
+ *  The title line becomes the table's caption (it carries the full, correct
+ *  "Table N: <name>" — better than the often-mangled `tables[i].caption`,
+ *  e.g. a stray "a: …"). Tables are matched to title lines positionally, in
+ *  document order. Returns null when the count of title lines ≠ the count of
+ *  tables, so the caller falls back to the safe stacked layout rather than
+ *  risk pairing a table with the wrong heading. */
+function interleaveTables(
+  cleaned: string,
+  tables: { id?: string; caption?: string; rows: string[][] }[],
+): BodySegment[] | null {
+  if (tables.length === 0) return null;
+  const lines = cleaned.split("\n");
+  const titleIdxs = lines
+    .map((ln, i) => (TABLE_TITLE_RE.test(ln.trim()) ? i : -1))
+    .filter(i => i >= 0);
+  if (titleIdxs.length !== tables.length) return null;
+
+  const flush = (from: number, to: number): string =>
+    lines.slice(from, to).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+
+  const segs: BodySegment[] = [];
+  let cursor = 0;
+  titleIdxs.forEach((idx, t) => {
+    const prose = flush(cursor, idx);
+    if (prose) segs.push({ kind: "prose", text: prose });
+    segs.push({ kind: "table", caption: lines[idx].trim(), rows: tables[t].rows });
+    cursor = idx + 1;
+  });
+  const tail = flush(cursor, lines.length);
+  if (tail) segs.push({ kind: "prose", text: tail });
+  return segs;
+}
+
+/** Drop standalone "Figure N: <caption>" title lines from the body text —
+ *  they're rendered (with the image) in the Figures section, so leaving them
+ *  in the prose duplicates the caption. Only strips lines that START with
+ *  "Figure <num>:", so inline references ("… ; See Figure 6.3.3.6-1") that
+ *  point the reader at a figure are preserved. No-op when the clause has no
+ *  figures. */
+function stripFigureCaptionLines(
+  text: string,
+  figures?: { id?: string; caption?: string }[],
+): string {
+  if (!figures || figures.length === 0) return text;
+  return text
+    .split("\n")
+    .filter(ln => !/^\s*Figure\s+[\w.\-]+\s*:/i.test(ln))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** Clean the flattened clause text for the body `<pre>`. Drops:
+ *   1. Pipe-row leftovers (`| cell | cell`) — they're rendered as the real
+ *      structured <table> instead.
+ *   2. "NOTE N:" prose lines whose number also appears in a table's NOTE
+ *      row — otherwise the same notes show twice (as prose before the table,
+ *      and as the table's note section after it). 3GPP packs all of a
+ *      table's notes into one concatenated NOTE cell ("NOTE 1: … NOTE 2: …"),
+ *      so we match by note NUMBER, not full text. A "NOTE N:" line whose
+ *      number isn't under any table stays in the body.
+ *  Conservative on (1): only matches lines whose first non-whitespace char
+ *  is `|`, so prose containing literal pipes mid-sentence survives. */
+function cleanClauseBody(text: string, tables: { rows: string[][] }[]): string {
+  const tableNoteNums = new Set<string>();
+  for (const t of tables) {
+    for (const row of t.rows) {
+      if (!isNoteRow(row)) continue;
+      for (const m of (row[0] || "").matchAll(/\bNOTE\s+(\d+)\s*[:.]/gi)) {
+        tableNoteNums.add(m[1]);
+      }
+    }
+  }
   return text
     .split("\n")
     .filter(ln => !/^\s*\|/.test(ln))
+    .filter(ln => {
+      const m = ln.match(/^\s*NOTE\s+(\d+)\s*[:.]/i);
+      return !(m && tableNoteNums.has(m[1]));
+    })
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
