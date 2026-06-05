@@ -4,6 +4,7 @@ import { getDownloadProgress } from "@/lib/corpus/downloader";
 import { getCorpusMeta, corpusEngineError } from "@/lib/corpus/store";
 import { activeRetrieverPath } from "@/lib/corpus/retriever";
 import { BGE_EMBEDDER_MODEL_ID } from "@/lib/corpus/embedder-bge";
+import { RERANKER_MODEL_ID } from "@/lib/corpus/reranker-ce";
 import { loadSettings } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
@@ -48,7 +49,11 @@ export async function GET(req: Request) {
   // the UI badge keys off. embeddingModel (corpus) vs queryEmbedderModel
   // (bundled) lets the UI explain WHY hybrid is off when it is.
   const retrieverPath = activeRetrieverPath();
-  const hybridActive = retrieverPath === "hybrid-rrf";
+  const hybridActive = retrieverPath === "hybrid-rrf" || retrieverPath === "hybrid-rrf+rerank";
+  // Reranking (Phase A / v0.5.5) layers on top of hybrid. rerankerActive is
+  // the headline bool the UI badge keys off; rerankerModel names the bundled
+  // cross-encoder for the debug surface.
+  const rerankerActive = retrieverPath === "hybrid-rrf+rerank";
 
   const base = {
     installed,
@@ -65,6 +70,8 @@ export async function GET(req: Request) {
     // ── Retrieval mode (v0.5) ───────────────────────────────────────
     retrieverPath,
     hybridActive,
+    rerankerActive,
+    rerankerModel: RERANKER_MODEL_ID,                  // bundled cross-encoder
     embeddingModel: meta?.embeddingModel ?? null,     // what the corpus was built with
     queryEmbedderModel: BGE_EMBEDDER_MODEL_ID,         // what the desktop bundles
   };

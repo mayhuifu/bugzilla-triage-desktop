@@ -12,6 +12,52 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.5.5 — Hit-rank fix: conformance-test-spec demotion (next-gen RAG Phase A)
+
+**Tagged:** _pending_
+**Published:** _pending_
+
+### Highlights
+
+Phase A of the next-gen RAG work (`PLAN-nextgen-rag.md`). The goal was the
+maintainer's "RAG hit-rank doesn't work well for some cases." We built the
+planned cross-encoder reranker AND an eval harness to prove it — and the eval
+sent us somewhere better.
+
+- **Conformance-test specs are now demoted below normative clauses in all
+  retrieval.** The corpus carries 3GPP *test* specs (38.523-1, 38.521-\*,
+  38.508-1, 36.523-1, 36.521-\*, 36.508) alongside the normative specs. Their
+  test-procedure clauses share heavy vocabulary with bug summaries and were
+  **flooding the candidate pool, burying the normative clause** an engineer
+  actually wants. Demoting them (they still appear, just ranked under normative
+  clauses) lifted retrieval on the verified eval set (63 queries, acceptable-
+  answer scoring): **R@1 20.6% → 30.2% (+9.6pp)**, **MRR@10 34.0 → 43.8
+  (+9.8pp)**, **R@10 61.9% → 65.1%** — the right answers were always retrieved,
+  just buried. Disable with `CORPUS_DEMOTE_TEST_SPECS=0`.
+- **The planned cross-encoder reranker ships DORMANT.** It's fully implemented
+  (`lib/corpus/reranker*.ts`, wired into the hybrid path, status + `/spec`
+  badge) but **off by default** (`CORPUS_RERANK=1` to enable) because the eval
+  showed both candidate models (ms-marco-MiniLM-L-6-v2 and bge-reranker-base)
+  *regress* top-1 by 2–6pp on 3GPP normative-clause retrieval — general
+  web-search cross-encoders misalign with normative relevance. Full analysis:
+  `EVAL-v0.5.5-reranker-findings.md`. No reranker model is bundled, so the
+  installer doesn't grow.
+- **Reproducible eval harness.** `scripts/dev-rerank-eval.mjs` measures
+  MRR@10 / R@1 / R@10 for hybrid vs hybrid+rerank (and the test-spec
+  down-weight) against the corpus + eval set, with acceptable-answer-set
+  scoring. `scripts/eval-curation-report.mjs` characterises each query
+  (exists / leaf / rank / mode).
+- **Verified eval set.** The corpus eval set (`scripts/eval-queries.json`) was
+  verified (every clause id exists as a leaf), stratified by retrieval mode
+  (top1 / ranked-low / recall-miss), and given **acceptable-answer sets** so a
+  defensible sibling answer (e.g. the specific procedure clause vs the
+  section's «General» stub) stops counting as a miss.
+
+Desktop-only — no corpus rebuild, still `rel17-v5`, no schema change. Older
+corpora are unaffected (demotion is a no-op when no test specs are present).
+
+---
+
 ## v0.5.1 — Spec drawer: figure & table rendering fixes
 
 **Tagged:** 2026-06-01

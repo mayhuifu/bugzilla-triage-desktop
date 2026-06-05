@@ -73,15 +73,21 @@ jobs:
           npm_config_disturl: https://electronjs.org/headers
         run: npm ci
 
-      # Stage the bge-small-en-v1.5 ONNX + tokenizer into models/ so
+      # Stage the bge-small-en-v1.5 embedder ONNX + tokenizer into models/ so
       # electron-builder bundles it (electron-builder.json copies models/ →
       # resources/app/.next/standalone/models). WITHOUT this step the installer
       # ships an EMPTY models/ dir (just .gitkeep), the query embedder can't
       # load offline, and hybrid retrieval silently degrades to BM25. The
-      # download (~33 MB) runs on each OS runner; it's offline-loaded at runtime
-      # so the desktop never needs network for embeddings. (onnxruntime-node's
-      # napi-v6 prebuild is ABI-stable, so the Electron-targeted npm ci above
-      # doesn't affect it — only better-sqlite3 needs the electron prebuild.)
+      # download (~33 MB) is offline-loaded at runtime so the desktop never
+      # needs network for embeddings. (onnxruntime-node's napi-v6 prebuild is
+      # ABI-stable, so the Electron-targeted npm ci above doesn't affect it —
+      # only better-sqlite3 needs the electron prebuild.)
+      #
+      # NOTE: the cross-encoder reranker (Phase A / v0.5.5) is intentionally
+      # NOT staged here — it ships DORMANT (CORPUS_RERANK=1 to enable) because
+      # the eval showed it regresses hit-rank (EVAL-v0.5.5-reranker-findings.md).
+      # The v0.5.5 hit-rank win is test-spec demotion (code-only, no model). To
+      # re-enable the reranker later, switch this step to `npm run fetch:models`.
       - name: Stage embedding model (bge-small-en-v1.5)
         run: npm run fetch:model
 

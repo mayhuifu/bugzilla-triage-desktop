@@ -27,6 +27,8 @@ import { corpusHasVectors, getCorpusDb, getFigureImagesForClause } from "./store
 import { expandAcronyms } from "./acronyms";
 import { getCorpusEmbedder } from "./embedder";
 import { ensureBgeEmbedderRegistered } from "./embedder-bge";
+import { getCorpusReranker, type CorpusReranker } from "./reranker";
+import { ensureRerankerRegistered } from "./reranker-ce";
 
 /** Structured table lifted from the v2 corpus's `tables_json` column.
  *  The corpus pipeline (bugzilla-triage-corpus 02-parse.ts) extracts these
@@ -71,8 +73,13 @@ export interface RetrievedClause {
   parentTitle?: string;
   text: string;              // full clause text (capped for prompt injection)
   bm25Score?: number;        // negative number; lower (more negative) = better
+  /** Cross-encoder reranker score (Phase A / v0.5.5). Present only on
+   *  results returned by the "hybrid-rrf+rerank" path; HIGHER = more
+   *  relevant. Used for the debug surface and to expose why ordering
+   *  differs from the raw RRF fusion. */
+  rerankScore?: number;
   /** Retrieval source label for the SpecDrawer / debug surface. */
-  retrieverPath?: "bm25-v1" | "bm25-v2" | "hybrid-rrf";
+  retrieverPath?: "bm25-v1" | "bm25-v2" | "hybrid-rrf" | "hybrid-rrf+rerank";
   /** Structured tables (v2 only). Empty array on v1 corpora. */
   tables?: ClauseTable[];
   /** Figure references (v2 only). */
@@ -99,6 +106,66 @@ const MAX_TEXT_CHARS = 1200; // per-clause cap when injecting into prompt
 // runtime behaviour matches what 05-eval.ts measures at build time.
 const RRF_K = 60;
 const CANDIDATES_PER_SOURCE = 50;
+
+// Reranker constants (Phase A / v0.5.5). When a cross-encoder reranker is
+// registered, the hybrid path generates a WIDER candidate pool (so the
+// reranker has something to reorder) and returns the top `limit` after
+// reranking. RERANK_CANDIDATE_K is the pool size; raising it improves the
+// chance the right clause is in the pool at the cost of more cross-encoder
+// forward passes (each ~constant). 30 matched the eval sweet spot.
+const RERANK_CANDIDATE_K = 30;
+// The query side of a cross-encoder pair shares the model's 512-token budget
+// with the passage, so a long ticket description would crowd out the clause
+// text. Cap the rerank query to keep the passage well-represented.
+const RERANK_QUERY_MAX_CHARS = 512;
+
+// ── Conformance-test-spec demotion (v0.5.5) ───────────────────────
+//
+// The biggest measured hit-rank win. The corpus carries 3GPP conformance
+// TEST specs (38.523-1, 38.521-*, 38.508-1, 36.523-1, 36.521-*, 36.508)
+// alongside the normative specs. Their test-procedure clauses share heavy
+// vocabulary with bug summaries ("the UE shall …", procedure names) and so
+// FLOOD the candidate pool, burying the normative clause an engineer actually
+// wants. On the rel17-v5 + 48-query eval, demoting them below normative
+// clauses lifted R@1 10.4%→18.8% (+8.4pp) and MRR@10 19.7→27.2 (+7.5pp) with
+// R@10 unchanged — i.e. the right answers were always retrieved, just buried.
+// See EVAL-v0.5.5-reranker-findings.md.
+//
+// Strategy: a STABLE PARTITION — normative clauses keep their retrieved order,
+// then test-spec clauses follow (also in order). Test specs still appear (the
+// product intent: they were curated in deliberately), just below normative
+// clauses. Equivalent to a strong soft penalty (penalty 0…0.5 all collapsed to
+// the same eval numbers). Applied as the FINAL ranking step so it holds
+// regardless of bm25 vs hybrid vs rerank. Disable with CORPUS_DEMOTE_TEST_SPECS=0.
+const DEMOTE_TEST_SPECS = process.env.CORPUS_DEMOTE_TEST_SPECS !== "0";
+// Match the spec base of each conformance test series (also matches -N parts:
+// 38.521-1/-2/-3 etc.). Anchored at start of the spec token.
+const TEST_SPEC_RE = /^(?:38\.523|36\.523|38\.521|36\.521|38\.508|36\.508)\b/;
+// When demoting, fetch a WIDER candidate pool than `limit` so normative
+// clauses ranked just outside the window can bubble up past demoted test
+// specs. Without this, a top-`limit` already full of test specs has nothing
+// to promote in their place.
+const DEMOTE_POOL_MIN = 50;
+
+function isTestSpecId(clauseId: string): boolean {
+  return TEST_SPEC_RE.test(clauseId.split("#")[0]);
+}
+
+/** Stable partition: normative clauses first (retrieved order preserved),
+ *  then test-spec clauses (retrieved order preserved). No-op on corpora
+ *  without test specs (v1) or when CORPUS_DEMOTE_TEST_SPECS=0. */
+function demoteTestSpecs(clauses: RetrievedClause[]): RetrievedClause[] {
+  if (!DEMOTE_TEST_SPECS) return clauses;
+  const normative: RetrievedClause[] = [];
+  const test: RetrievedClause[] = [];
+  for (const c of clauses) (isTestSpecId(c.clauseId) ? test : normative).push(c);
+  return test.length === 0 ? clauses : normative.concat(test);
+}
+
+/** Candidate-pool size to fetch before demotion + slicing to `limit`. */
+function demotePoolSize(limit: number): number {
+  return DEMOTE_TEST_SPECS ? Math.max(DEMOTE_POOL_MIN, limit * 5, limit) : limit;
+}
 
 // Common English stopwords that confuse BM25 ranking when bag-of-words.
 const STOPWORDS = new Set([
@@ -231,6 +298,28 @@ function vecToBlob(v: Float32Array): Buffer {
   return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
 }
 
+/** Ensure the bundled cross-encoder reranker is registered (idempotent) and
+ *  return it, or null if registration failed / no model is available. The
+ *  reranker works against any corpus version (it scores raw text pairs, no
+ *  embedding-space match required), so unlike the embedder there is no
+ *  meta.embeddingModel gate. */
+function getActiveReranker(): CorpusReranker | null {
+  ensureRerankerRegistered();
+  return getCorpusReranker();
+}
+
+/** Build the passage string handed to the cross-encoder for a candidate.
+ *  The clause TITLE (and parent title) is load-bearing: 3GPP bodies
+ *  abbreviate to acronyms the title spells out (e.g. body "PDSCH" vs title
+ *  "Physical downlink shared channel"), and a general MS-MARCO cross-encoder
+ *  bridges that gap far better when the expansion is present. Verified in
+ *  scripts/spike-reranker.mjs (case 3 flipped from miss to hit once the
+ *  title prefix was added). */
+function rerankPassage(c: RetrievedClause): string {
+  const head = c.parentTitle ? `${c.parentTitle} — ${c.title}` : c.title;
+  return `${head}. ${c.text}`;
+}
+
 interface CandidateRow {
   id: string; spec: string; clause_no: string; citation: string;
   title: string; parent_title: string | null; text: string;
@@ -256,6 +345,9 @@ function bm25Retrieve(matchExpr: string, label: "bm25-v1" | "bm25-v2", limit: nu
   const db = getCorpusDb();
   if (!db) return [];
   try {
+    // Fetch a wider pool so test-spec demotion can promote normative clauses
+    // ranked just outside `limit` (no-op slice when demotion is off).
+    const fetchN = demotePoolSize(limit);
     const rows = db.prepare(`
       SELECT c.id, c.spec, c.clause_no, c.citation, c.title, c.parent_title, c.text,
              bm25(clauses_fts) AS score
@@ -264,8 +356,8 @@ function bm25Retrieve(matchExpr: string, label: "bm25-v1" | "bm25-v2", limit: nu
       WHERE clauses_fts MATCH ?
       ORDER BY score
       LIMIT ?
-    `).all(matchExpr, limit) as CandidateRow[];
-    return mapRows(rows, label);
+    `).all(matchExpr, fetchN) as CandidateRow[];
+    return demoteTestSpecs(mapRows(rows, label)).slice(0, limit);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn(`[corpus] ${label} retrieval failed:`, err);
@@ -273,9 +365,26 @@ function bm25Retrieve(matchExpr: string, label: "bm25-v1" | "bm25-v2", limit: nu
   }
 }
 
-/** Hybrid RRF path. Returns empty array on any failure so caller can
- *  fall through to BM25 — never throws. */
-async function hybridRetrieve(matchExpr: string, queryText: string, limit: number = TOP_K): Promise<RetrievedClause[]> {
+/** Hybrid RRF path, optionally followed by cross-encoder reranking
+ *  (Phase A / v0.5.5). Returns empty array on any failure so the caller can
+ *  fall through to BM25 — never throws.
+ *
+ *  When a reranker is registered, the RRF fusion produces a WIDER candidate
+ *  pool (RERANK_CANDIDATE_K) which the cross-encoder reorders by scoring each
+ *  (rerankQuery, clause) pair jointly; the top `limit` after reranking is
+ *  returned with retrieverPath="hybrid-rrf+rerank". Without a reranker the
+ *  behaviour is unchanged: top `limit` of the RRF order, "hybrid-rrf".
+ *
+ *  `rerankQuery` is a CONCISE natural-language query (e.g. a ticket summary
+ *  or the search box text) — distinct from `queryText`, which is embedded and
+ *  may be long. The cross-encoder shares a 512-token budget between query and
+ *  passage, so a long query would crowd out the clause text. */
+async function hybridRetrieve(
+  matchExpr: string,
+  queryText: string,
+  limit: number = TOP_K,
+  rerankQuery?: string,
+): Promise<RetrievedClause[]> {
   const db = getCorpusDb();
   const embedder = getCorpusEmbedder();
   if (!db || !embedder) return [];
@@ -287,10 +396,16 @@ async function hybridRetrieve(matchExpr: string, queryText: string, limit: numbe
     console.warn(`[corpus] embedder.embed failed; falling back to BM25:`, err);
     return [];
   }
-  // Each source must surface at least `limit` candidates so the RRF fusion
-  // has enough to rank — widen the per-source cap when the caller asks for
-  // more than the default top-K (e.g. the /spec search list).
-  const perSource = Math.max(CANDIDATES_PER_SOURCE, limit);
+  const reranker = getActiveReranker();
+  // Fetch a wider pool than `limit`: enough for the rerank window (when on)
+  // AND for test-spec demotion to bubble normative clauses up past demoted
+  // test specs. Both default to ≥50, so the RRF fusion always sees a healthy
+  // candidate set.
+  const wanted = Math.max(reranker ? RERANK_CANDIDATE_K : 0, demotePoolSize(limit));
+  // Each source must surface at least `wanted` candidates so the RRF fusion
+  // has enough to rank — widen the per-source cap accordingly.
+  const perSource = Math.max(CANDIDATES_PER_SOURCE, wanted);
+  let candidates: RetrievedClause[];
   try {
     const rows = db.prepare(`
       WITH fts_top AS (
@@ -321,13 +436,40 @@ async function hybridRetrieve(matchExpr: string, queryText: string, limit: numbe
     `).all(
       matchExpr, perSource,
       vecToBlob(vec), perSource,
-      RRF_K, limit,
+      RRF_K, wanted,
     ) as CandidateRow[];
-    return mapRows(rows, "hybrid-rrf");
+    candidates = mapRows(rows, "hybrid-rrf");
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn(`[corpus] hybrid retrieval failed:`, err);
     return [];
+  }
+
+  // No reranker (default) → demote test specs as the final ranking step,
+  // return top `limit`. This is the v0.5.5 hit-rank win (+8pp R@1).
+  if (!reranker || candidates.length <= 1) {
+    return demoteTestSpecs(candidates).slice(0, limit);
+  }
+
+  // Cross-encoder rerank (opt-in, CORPUS_RERANK=1; OFF by default — the eval
+  // showed it regresses, see EVAL-v0.5.5-reranker-findings.md). Rerank the
+  // top-K window, keep the remaining pool after it, THEN demote test specs as
+  // the final step so the demotion invariant holds regardless of rerank. The
+  // query is the concise rerankQuery (capped) so the passage isn't crowded out
+  // of the 512-token budget.
+  const rq = (rerankQuery ?? queryText).slice(0, RERANK_QUERY_MAX_CHARS);
+  try {
+    const window = candidates.slice(0, RERANK_CANDIDATE_K);
+    const rest = candidates.slice(RERANK_CANDIDATE_K);
+    const scores = await reranker.rerank(rq, window.map(rerankPassage));
+    const reranked = window
+      .map((c, i) => ({ ...c, retrieverPath: "hybrid-rrf+rerank" as const, rerankScore: Number.isFinite(scores[i]) ? scores[i] : -Infinity }))
+      .sort((a, b) => (b.rerankScore as number) - (a.rerankScore as number));
+    return demoteTestSpecs([...reranked, ...rest]).slice(0, limit);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(`[corpus] rerank failed; using hybrid order:`, err);
+    return demoteTestSpecs(candidates).slice(0, limit);
   }
 }
 
@@ -367,7 +509,12 @@ export async function retrieveContextAsync(ticket: TicketDetail): Promise<Retrie
       ticket.description.slice(0, 2000),
       ticket.component ?? "",
     ].join("\n");
-    const hits = await hybridRetrieve(q.match, queryText);
+    // Concise query for the cross-encoder (the summary is the highest-signal
+    // line; the long description is for the embedder, not the reranker).
+    const rerankQuery = [ticket.summary, ticket.component]
+      .filter(Boolean)
+      .join(" — ");
+    const hits = await hybridRetrieve(q.match, queryText, TOP_K, rerankQuery);
     if (hits.length > 0) return hits;
     // Fall through on empty / error.
     return bm25Retrieve(q.match, "bm25-v2");
@@ -402,7 +549,8 @@ export async function retrieveByText(
   const path = decidePath();
   if (path === "hybrid-rrf") {
     const q = buildQueryFromText(trimmed, /*useAcronymExpansion=*/ true);
-    const hits = await hybridRetrieve(q.match, trimmed, limit);
+    // The search-box text is already concise — reuse it as the rerank query.
+    const hits = await hybridRetrieve(q.match, trimmed, limit, trimmed);
     if (hits.length > 0) return hits;
     return bm25Retrieve(q.match, "bm25-v2", limit);
   }
@@ -419,9 +567,13 @@ export async function retrieveByText(
  *  /api/corpus/status report `hybridActive` to the UI (and surfaces the
  *  silent BM25-fallback-on-model-mismatch case, which is otherwise
  *  invisible). */
-export function activeRetrieverPath(): "bm25-v1" | "bm25-v2" | "hybrid-rrf" | "none" {
+export function activeRetrieverPath(): "bm25-v1" | "bm25-v2" | "hybrid-rrf" | "hybrid-rrf+rerank" | "none" {
   if (!getCorpusDb()) return "none";
-  return decidePath();
+  const path = decidePath();
+  // The reranker layers on top of the hybrid path only (Phase A scope). When
+  // hybrid is active AND a reranker is registered, the live path reranks.
+  if (path === "hybrid-rrf" && getActiveReranker()) return "hybrid-rrf+rerank";
+  return path;
 }
 
 /** Parse a model-emitted citation string into our canonical clause id.

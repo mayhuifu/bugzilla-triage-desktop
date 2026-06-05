@@ -215,13 +215,20 @@ function RetrieverBadge({
 }: { installed: boolean; path: string; hybrid: boolean }) {
   if (!installed) return null;
   if (hybrid) {
+    // Phase A / v0.5.5: the cross-encoder rerank layer sits on top of hybrid.
+    // Surface it so the user knows the strongest retrieval path is engaged.
+    const reranked = path === "hybrid-rrf+rerank";
     return (
       <span
         className="badge bg-emerald-500/10 text-emerald-300/90 ring-1 ring-emerald-500/30 inline-flex items-center gap-1.5"
-        title="Hybrid retrieval: keyword (BM25) + semantic (dense vectors) fused via RRF"
+        title={
+          reranked
+            ? "Hybrid retrieval (keyword BM25 + semantic vectors fused via RRF) refined by a cross-encoder reranker that reorders the top candidates for best top-1 relevance"
+            : "Hybrid retrieval: keyword (BM25) + semantic (dense vectors) fused via RRF"
+        }
       >
         <Zap className="w-3 h-3" />
-        Hybrid retrieval
+        {reranked ? "Hybrid + rerank" : "Hybrid retrieval"}
       </span>
     );
   }

@@ -9,6 +9,14 @@ import { getCorpusDb, getClauseMediaFlags } from "@/lib/corpus/store";
 
 export const dynamic = "force-dynamic";
 
+/** Hybrid is "active" whether or not the cross-encoder rerank layer is on
+ *  top (Phase A / v0.5.5 added "hybrid-rrf+rerank"). The UI badge keys off
+ *  this bool; reranking is a refinement of the hybrid path, not a separate
+ *  retrieval mode. */
+function isHybrid(p: string): boolean {
+  return p === "hybrid-rrf" || p === "hybrid-rrf+rerank";
+}
+
 // GET /api/corpus/search?q=<free text | citation>&limit=<N> — standalone
 // 3GPP spec search backing the /spec workbench page (v0.5). NOT gated
 // behind AI triage and needs no LLM: it runs the same hybrid (or BM25
@@ -79,7 +87,7 @@ export async function GET(req: Request) {
       kind: "empty",
       corpusInstalled,
       retrieverPath: path,
-      hybridActive: path === "hybrid-rrf",
+      hybridActive: isHybrid(path),
       results: [],
     });
   }
@@ -92,7 +100,7 @@ export async function GET(req: Request) {
       kind: "citation",
       corpusInstalled,
       retrieverPath: path,
-      hybridActive: path === "hybrid-rrf",
+      hybridActive: isHybrid(path),
       results: hit
         ? [{
             clauseId: hit.clauseId,
@@ -119,7 +127,7 @@ export async function GET(req: Request) {
     kind: "text",
     corpusInstalled,
     retrieverPath: results[0]?.retrieverPath ?? path,
-    hybridActive: (results[0]?.retrieverPath ?? path) === "hybrid-rrf",
+    hybridActive: isHybrid(results[0]?.retrieverPath ?? path),
     results: results.map(r => toCard(r, mediaFlags.get(r.clauseId))),
   });
 }
