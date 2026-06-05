@@ -40,12 +40,39 @@ const onnxFile = DTYPE === "fp32" ? "onnx/model.onnx" : "onnx/model_quantized.on
 const REQUIRED = ["config.json", "tokenizer.json", "tokenizer_config.json", onnxFile];
 const OPTIONAL = ["special_tokens_map.json", "vocab.txt"];
 
+// HuggingFace rate-limits (HTTP 429) and occasionally 5xxs, especially when
+// the 3 CI runners (win/mac/linux) hit it within seconds of each other. A bare
+// fetch with no retry then fails the whole release build. Retry transient
+// statuses with exponential backoff + jitter (jitter decorrelates the runners).
+const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+async function fetchWithRetry(url, attempts = 6) {
+  for (let i = 0; i < attempts; i++) {
+    let res;
+    try {
+      res = await fetch(url);
+    } catch (err) {
+      if (i === attempts - 1) throw err;
+      await sleep(Math.min(30000, 1000 * 2 ** i) + Math.floor(Math.random() * 1000));
+      continue;
+    }
+    if (res.ok || !RETRYABLE.has(res.status) || i === attempts - 1) return res;
+    const ra = Number(res.headers.get("retry-after"));
+    const waitMs = Number.isFinite(ra) && ra > 0
+      ? ra * 1000
+      : Math.min(30000, 1000 * 2 ** i) + Math.floor(Math.random() * 1000);
+    process.stdout.write(`(${res.status}, retry ${i + 1}/${attempts} in ${Math.round(waitMs / 1000)}s) `);
+    await sleep(waitMs);
+  }
+  throw new Error(`unreachable retry loop for ${url}`);
+}
+
 async function fetchTo(rel, required) {
   const url = `${BASE}/${rel}`;
   const out = path.join(dest, rel);
   fs.mkdirSync(path.dirname(out), { recursive: true });
   process.stdout.write(`  ${rel} … `);
-  const res = await fetch(url);
+  const res = await fetchWithRetry(url);
   if (!res.ok) {
     if (required) throw new Error(`HTTP ${res.status} for ${url}`);
     console.log(`skip (${res.status})`);
