@@ -22,7 +22,7 @@
     {
       "from": ".next/standalone",
       "to": "app/.next/standalone",
-      "filter": ["**/*", "!node_modules"]
+      "filter": ["**/*", "!node_modules", "!models", "!models/**"]
     },
     {
       "from": ".next/standalone/node_modules",
