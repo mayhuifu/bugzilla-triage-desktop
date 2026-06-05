@@ -43,6 +43,9 @@ interface ClauseFigureData {
    *  ClauseFigureImage entry exists, the drawer renders an inline
    *  `<img>`. */
   mediaFilename?: string;
+  /** VLM content caption (corpus rel17-v6 / schemaVersion=4): what the
+   *  diagram shows, generated at build time. Rendered under the figure. */
+  vlmCaption?: string;
 }
 
 interface ClauseFigureImage {
@@ -530,6 +533,11 @@ function ClauseFigures({ clause }: { clause: ClauseResponse }) {
               {!hasImage && (
                 <span className="ml-2 text-slate-600 not-italic">
                   (caption only — image not in corpus)
+                </span>
+              )}
+              {f.vlmCaption && (
+                <span className="block mt-1 not-italic text-slate-500 text-[10.5px] leading-snug">
+                  {f.vlmCaption}
                 </span>
               )}
             </figcaption>

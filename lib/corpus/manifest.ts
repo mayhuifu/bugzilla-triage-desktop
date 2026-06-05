@@ -59,7 +59,11 @@ export interface CorpusManifest {
 // additive — v3 corpora work fine on v2 clients (the new table is just
 // ignored), and v2 corpora work fine on this v3-aware client (the
 // SpecDrawer just doesn't render figures, same as before).
-const SUPPORTED_SCHEMA_VERSIONS = new Set([1, 2, 3]);
+// v4 (corpus rel17-v6, Phase B): Docling parse + VLM figure captions. Additive
+// over v3 — captions ride in clauses.text + figures_json.vlmCaption, so a v3-
+// aware read path still works (it just ignores the new field). Listed so the
+// v0.5.6 desktop accepts the rel17-v6 manifest.
+const SUPPORTED_SCHEMA_VERSIONS = new Set([1, 2, 3, 4]);
 
 function localManifestPath(): string {
   return path.join(appDataDir(), "corpus", "manifest.json");

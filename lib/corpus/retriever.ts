@@ -51,6 +51,11 @@ export interface ClauseFigure {
    *  (v1/v2) don't populate this field — figures still show their
    *  captions, just no image. */
   mediaFilename?: string;
+  /** VLM-generated content caption (corpus rel17-v6 / schemaVersion=4). A
+   *  concise factual description of what the diagram SHOWS, generated at
+   *  build time and also folded into the clause's indexed/embedded text so
+   *  the figure is searchable by content. Absent on v1–v3 corpora. */
+  vlmCaption?: string;
 }
 
 /** Lightweight figure-image metadata attached to a lookupClause result
