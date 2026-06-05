@@ -14,8 +14,8 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ## v0.5.5 — Hit-rank fix: conformance-test-spec demotion (next-gen RAG Phase A)
 
-**Tagged:** _pending_
-**Published:** _pending_
+**Tagged:** 2026-06-05
+**Published:** 2026-06-05 — https://github.com/mayhuifu/bugzilla-triage-desktop/releases/tag/v0.5.5 (corpus `rel17-v5`, unchanged)
 
 ### Highlights
 
