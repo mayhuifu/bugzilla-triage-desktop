@@ -64,3 +64,13 @@ extraction over ~13k clauses + schema v5 + runtime traversal). **Defer Phase C.*
 The hit-rank wins that actually landed were the cheap, eval-proven ones
 (test-spec demotion, cleaner parse). The expensive add-ons (reranker, VLM, KG)
 were each correctly gated OUT by the eval before sinking the build cost.
+
+## Update 2026-06-06 — hard relational eval built; verdict holds (DEFER)
+The prerequisite "harder eval" called for above is now built (corpus
+HARD-RELATIONAL-EVAL.md + scripts/eval-queries-relational-candidates.json,
+gate scripts/dev-relational-eval-gate.mjs). Of 26 grounded multi-hop queries,
+only 3 are true recall-misses (answer outside the pool of 50 → KG territory);
+7/10 hard cases are ranked-low-in-pool (reranker territory). Verdict unchanged:
+DEFER the KG. Secondary finding: the reranker (shipped dormant) targets the
+dominant hard mode — re-evaluating it against this harder set is likely higher
+ROI than the KG. The 3 true-misses (eval qid 102,103,108) are the KG gate.
