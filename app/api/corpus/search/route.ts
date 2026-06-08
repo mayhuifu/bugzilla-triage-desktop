@@ -6,6 +6,7 @@ import {
   type RetrievedClause,
 } from "@/lib/corpus/retriever";
 import { getCorpusDb, getClauseMediaFlags } from "@/lib/corpus/store";
+import { hasConfiguredLlmProvider } from "@/lib/llm";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +15,7 @@ export const dynamic = "force-dynamic";
  *  this bool; reranking is a refinement of the hybrid path, not a separate
  *  retrieval mode. */
 function isHybrid(p: string): boolean {
-  return p === "hybrid-rrf" || p === "hybrid-rrf+rerank";
+  return p === "hybrid-rrf" || p === "hybrid-rrf+rerank" || p === "hybrid-rrf+llm-rerank";
 }
 
 // GET /api/corpus/search?q=<free text | citation>&limit=<N> — standalone
@@ -88,6 +89,7 @@ export async function GET(req: Request) {
       corpusInstalled,
       retrieverPath: path,
       hybridActive: isHybrid(path),
+      rerankAvailable: hasConfiguredLlmProvider(),
       results: [],
     });
   }
@@ -101,6 +103,7 @@ export async function GET(req: Request) {
       corpusInstalled,
       retrieverPath: path,
       hybridActive: isHybrid(path),
+      rerankAvailable: hasConfiguredLlmProvider(),
       results: hit
         ? [{
             clauseId: hit.clauseId,
@@ -116,11 +119,11 @@ export async function GET(req: Request) {
     });
   }
 
-  // Free-text retrieval (hybrid when available, else BM25). Never throws —
-  // retrieveByText degrades internally and returns [] on any failure.
-  const results = await retrieveByText(q, { limit });
-  // Batch-probe figure/table presence so result cards can show the chips
-  // (the ranking path doesn't carry this; one pair of set queries).
+  // Free-text retrieval. ?rerank=llm opts into LLM reranking, but ONLY when a
+  // provider is configured — otherwise we silently stay hybrid (offline floor).
+  const rerankAvailable = hasConfiguredLlmProvider();
+  const wantLlm = url.searchParams.get("rerank") === "llm" && rerankAvailable;
+  const results = await retrieveByText(q, { limit, ...(wantLlm ? { rerank: "llm" as const } : {}) });
   const mediaFlags = getClauseMediaFlags(results.map(r => r.clauseId));
   return NextResponse.json({
     query: q,
@@ -128,6 +131,12 @@ export async function GET(req: Request) {
     corpusInstalled,
     retrieverPath: results[0]?.retrieverPath ?? path,
     hybridActive: isHybrid(results[0]?.retrieverPath ?? path),
-    results: results.map(r => toCard(r, mediaFlags.get(r.clauseId))),
+    rerankAvailable,
+    ranking: wantLlm ? "llm" : "hybrid",
+    results: results.map((r, i) => ({
+      ...toCard(r, mediaFlags.get(r.clauseId)),
+      hybridRank: r.hybridRank,
+      rank: i + 1,
+    })),
   });
 }
