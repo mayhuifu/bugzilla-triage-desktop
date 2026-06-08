@@ -114,16 +114,15 @@ interface StoredEnvelope {
   settings: Settings;
 }
 
-/** Default corpus manifest URL — the published rel17-v5 manifest on
- *  github.com/mayhuifu/bugzilla-triage-corpus. v5 re-embeds the corpus
- *  with BAAI/bge-small-en-v1.5 (384-dim) so the desktop's bundled
- *  query-time embedder produces vectors in the SAME space → real hybrid
- *  (BM25 ⊕ dense ⊕ RRF) retrieval instead of the BM25 fallback the
- *  bge-m3 (1024-dim) v4 corpus forced. Everything else (12,930 leaf
- *  clauses, structured tables, 1,128 figure images, schemaVersion=3) is
- *  carried forward unchanged from v4. */
+/** Default corpus manifest URL — the published rel17-v6 manifest on
+ *  github.com/mayhuifu/bugzilla-triage-corpus. v6 adds TS 38.306 (UE radio
+ *  access capabilities) + TS 24.501 (5GS NAS) to close the RedCap
+ *  capability/eDRX coverage gap — 14,007 leaf clauses across 38 specs.
+ *  Still BAAI/bge-small-en-v1.5 (384-dim), schemaVersion=3 (purely additive
+ *  over v5), so the desktop's bundled query-time embedder produces vectors in
+ *  the SAME space → real hybrid (BM25 ⊕ dense ⊕ RRF) retrieval. */
 const DEFAULT_CORPUS_MANIFEST_URL =
-  "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v5/3gpp-corpus-rel17-v5-2026-05.manifest.json";
+  "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v6/3gpp-corpus-rel17-v6-2026-06.manifest.json";
 
 /** Legacy default URLs we've shipped. When a user's saved settings.json
  *  still has one of these (i.e. they accepted the default at install
@@ -140,6 +139,7 @@ const LEGACY_DEFAULT_CORPUS_MANIFEST_URLS = new Set([
   "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v2/3gpp-corpus-rel17-v2-2026-05.manifest.json",
   "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v3/3gpp-corpus-rel17-v3-2026-05.manifest.json",
   "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v4/3gpp-corpus-rel17-v4-2026-05.manifest.json",
+  "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v5/3gpp-corpus-rel17-v5-2026-05.manifest.json",
 ]);
 
 const EMPTY_SETTINGS: Settings = {

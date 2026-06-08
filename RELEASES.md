@@ -12,6 +12,46 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.6.0 — LLM reranker (opt-in) + RedCap corpus (rel17-v6)
+
+**Tagged:** 2026-06-08
+
+### Highlights
+
+Two additions, both grounded in eval work: a no-bundle LLM reranker for spec
+search, and a corpus that finally covers RedCap capabilities + NAS.
+
+- **`/spec` search gains an opt-in "✨ AI rerank" toggle.** It reranks the
+  hybrid candidate pool with the AI provider you already configured for triage
+  (`lib/llm.ts` — anthropic / openai-compatible / claude-cli / codex-cli) via a
+  single listwise call, then RRF-fuses the LLM order with the hybrid order
+  (protects top-1). Each result shows a **rank-delta badge vs hybrid**
+  (▲/▼/•/★) so you can compare the two rankings directly. This is the
+  zero-bundle alternative to the held 266 MB cross-encoder.
+  - **LLM-optional, by design:** hybrid (BM25 ⊕ dense ⊕ RRF) is the floor. The
+    AI-rerank button is disabled (with a tooltip) when no provider is
+    configured; any LLM failure/timeout silently falls back to hybrid — search
+    never breaks. **Triage is untouched.**
+  - **Default OFF (experimental).** The reranker's quality isn't eval-gated yet
+    — run `scripts/dev-llm-rerank-eval.mjs` with your provider to measure it
+    before relying on it. Interactive rerank wants a fast API provider
+    (~1–3 s); CLI providers (codex/claude-cli) cold-start can exceed the 12 s
+    timeout and fall back to hybrid.
+- **Corpus default → `rel17-v6`.** Adds **TS 38.306** (UE radio access
+  capabilities) and **TS 24.501** (5GS NAS) — closing the RedCap
+  capability/eDRX coverage gap a verification campaign surfaced. 14,007 leaf
+  clauses across 38 specs; `schemaVersion=3` (purely additive over v5), so
+  existing v5 installs auto-upgrade and the bundled bge-small embedder still
+  matches.
+
+### Notes
+
+- No new bundled model; no schema change. Older desktops reading the v6 corpus
+  ignore nothing new (schema 3 unchanged) — the additions are the two extra
+  specs' clauses.
+- The cross-encoder reranker (`reranker-ce.ts`) stays in-tree but dormant
+  (`CORPUS_RERANK=1`); see `EVAL-v0.5.5-reranker-findings.md`.
+
 ## v0.5.5 — Hit-rank fix: conformance-test-spec demotion (next-gen RAG Phase A)
 
 **Tagged:** 2026-06-05
