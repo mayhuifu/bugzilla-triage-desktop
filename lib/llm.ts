@@ -809,6 +809,23 @@ export async function runTriage(
   });
 }
 
+/** True when the configured provider can actually be called: CLI providers
+ *  use a subscription (no key), SDK providers need a key (and a baseURL for
+ *  openai-compatible). Used to gate the opt-in LLM reranker — never to gate
+ *  plain hybrid search. */
+export function hasConfiguredLlmProvider(s = loadSettings()): boolean {
+  switch (s.llmProvider) {
+    case "claude-cli":
+    case "codex-cli":
+      return true; // subscription via local binary
+    case "openai-compatible":
+      return !!s.anthropicApiKey && !!s.llmBaseUrl;
+    case "anthropic":
+    default:
+      return !!s.anthropicApiKey;
+  }
+}
+
 // ── Anthropic path ────────────────────────────────────────────────
 
 interface ProviderCallArgs {
@@ -1148,6 +1165,89 @@ function spawnAndCapture(cmd: string, cliArgs: string[]): Promise<string> {
       }
     });
   });
+}
+
+/** Generic, provider-agnostic one-shot LLM call: system + user prompt → raw
+ *  text. A LEAN sibling of the runTriage<Provider> functions (deliberately NOT
+ *  a refactor of them — the shipped triage path must stay untouched). Used by
+ *  the corpus LLM reranker. Throws on hard provider failure; the caller
+ *  catches and degrades to hybrid. No images/PDFs/JSON-schema.
+ *  `opts.timeoutMs` bounds the call so a slow provider can't freeze search. */
+export async function runLlmText(
+  system: string,
+  user: string,
+  opts: { model?: string; maxTokens?: number; timeoutMs?: number } = {},
+): Promise<string> {
+  const s = loadSettings();
+  const maxTokens = opts.maxTokens ?? 1024;
+  const timeoutMs = opts.timeoutMs ?? 12_000;
+
+  let model = opts.model || s.defaultModel || DEFAULT_MODEL;
+  if (s.llmProvider === "claude-cli" && !/^(opus|sonnet|haiku|claude-)/i.test(model)) {
+    model = "opus";
+  }
+  if (s.llmProvider === "codex-cli") {
+    model = /^(gpt-|o\d|chatgpt-|codex)/i.test(model) ? model.toLowerCase() : "";
+  }
+
+  const withTimeout = <T>(p: Promise<T>): Promise<T> =>
+    Promise.race([
+      p,
+      new Promise<T>((_, rej) =>
+        setTimeout(() => rej(new Error(`runLlmText timed out after ${timeoutMs}ms`)), timeoutMs)),
+    ]);
+
+  if (s.llmProvider === "anthropic") {
+    const client = new Anthropic({ apiKey: s.anthropicApiKey });
+    const resp = await withTimeout(client.messages.create({
+      model, max_tokens: maxTokens, system,
+      messages: [{ role: "user", content: user }],
+    }));
+    const block = resp.content.find((b): b is Anthropic.TextBlock => b.type === "text");
+    return (block?.text ?? "").trim();
+  }
+
+  if (s.llmProvider === "openai-compatible") {
+    const client = new OpenAI({ apiKey: s.anthropicApiKey, baseURL: s.llmBaseUrl });
+    const resp = await withTimeout(client.chat.completions.create({
+      model, max_tokens: maxTokens,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+    }));
+    return (resp.choices[0]?.message?.content ?? "").trim();
+  }
+
+  if (s.llmProvider === "claude-cli") {
+    const stdout = await withTimeout(spawnAndCapture("claude", [
+      "-p", "--output-format", "json", "--model", model,
+      "--system-prompt", system, user,
+    ]));
+    let envelope: { result?: string };
+    try { envelope = JSON.parse(stdout); }
+    catch { throw new Error(`claude CLI returned non-JSON: ${stdout.slice(0, 200)}`); }
+    return (envelope.result ?? "").trim();
+  }
+
+  if (s.llmProvider === "codex-cli") {
+    const combined = `${system}\n\n---\n\n${user}`;
+    const tmpRoot = path.join(os.tmpdir(), `corpus-rerank-${randomBytes(6).toString("hex")}`);
+    await fs.mkdir(tmpRoot, { recursive: true });
+    try {
+      const outputPath = path.join(tmpRoot, "result.txt");
+      const cliArgs = ["exec", "--skip-git-repo-check", "--sandbox", "read-only",
+        "--ephemeral", "--cd", tmpRoot, "-o", outputPath];
+      if (model) cliArgs.push("-m", model);
+      cliArgs.push("-");
+      await withTimeout(spawnAndDrain("codex", cliArgs, combined));
+      return (await fs.readFile(outputPath, "utf8")).trim();
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+    }
+  }
+
+  throw new Error(`runLlmText: unsupported provider ${s.llmProvider}`);
 }
 
 // ── OpenAI Codex CLI path ─────────────────────────────────────────
