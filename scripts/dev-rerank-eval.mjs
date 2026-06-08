@@ -258,7 +258,10 @@ for (let i = 0; i < queries.length; i++) {
   }
   hybridRanks.push(hRank);
   rerankRanks.push(rRank);
-  const st = q.stratum || "(none)";
+  // GROUP_BY=mode breaks the per-stratum table down by retrieval mode
+  // (top1/ranked-low/recall-miss/relational/normal) instead of subsystem —
+  // the right lens for "does rerank help the ranked-low/relational cases?".
+  const st = ((process.env.GROUP_BY === "mode" ? q.mode : q.stratum)) || "(none)";
   (perStratum[st] ??= { hybrid: [], rerank: [] });
   perStratum[st].hybrid.push(hRank);
   perStratum[st].rerank.push(rRank);

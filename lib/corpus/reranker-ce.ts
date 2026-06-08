@@ -135,15 +135,20 @@ let _registered = false;
  *  (also edge-compiled) for the same reason as the embedder — see embedder-bge.ts. */
 export function ensureRerankerRegistered(): void {
   if (_registered) return;
-  // DEFAULT-OFF (eval-gated). The v0.5.5 rerank eval (scripts/dev-rerank-eval.mjs
-  // on rel17-v5 + the 48-query set) showed BOTH candidate cross-encoders
-  // (ms-marco-MiniLM-L-6-v2 and bge-reranker-base) REGRESS top-1 by 2–6pp,
-  // even on a test-spec-filtered pool — general web-search rerankers misalign
-  // with 3GPP normative-clause relevance. The actual hit-rank win was
-  // deprioritising conformance-test specs in candidate generation (+8pp R@1).
-  // The reranker code stays in-tree, fully functional, but inert unless
-  // explicitly enabled (CORPUS_RERANK=1) so it can be re-evaluated against a
-  // verified eval set / a domain-tuned reranker without a code change.
+  // DEFAULT-OFF (eval-gated). v0.5.5: BOTH candidate cross-encoders regressed
+  // top-1 in REPLACE mode on the 48-query set, so the shipped win was test-spec
+  // demotion (+8pp R@1) and the reranker stayed dormant.
+  // UPDATE 2026-06: re-eval on the 73-query hard set (10 added relational
+  // multi-hop queries) found a real win — **bge-reranker-base in FUSE mode**:
+  // +2.9 MRR@10 / +5.5 R@1 overall, +7.7 R@1 on BOTH relational and ranked-low,
+  // cost = 1 top-1 demotion + R@10 −2.7. (ms-marco-MiniLM still loses; REPLACE
+  // mode still tanks top-1.) HELD, not shipped: bge-reranker-base is 266 MB int8
+  // (>5× the corpus) and this impl does REPLACE only — enabling needs (a) fuse
+  // mode here + in retriever.ts and (b) a delivery story for the 266 MB model
+  // (runtime download, not installer bundle). See EVAL-v0.5.5-reranker-findings.md
+  // "Update 2026-06". Reproduce: RERANK_MODEL=Xenova/bge-reranker-base
+  // RERANK_MODE=fuse GROUP_BY=mode EXCLUDE_TEST_SPECS=1 node scripts/dev-rerank-eval.mjs
+  // The reranker code stays in-tree, inert unless CORPUS_RERANK=1.
   if (process.env.CORPUS_RERANK !== "1") {
     _registered = true; // mark done so we don't re-check every query
     return;

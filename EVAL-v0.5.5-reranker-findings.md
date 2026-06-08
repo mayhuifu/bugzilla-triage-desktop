@@ -120,3 +120,48 @@ DEBUG=1 DEBUG_N=8 node scripts/dev-rerank-eval.mjs        # per-query before/aft
 ```
 Defaults point at `out/corpus.sqlite` (rel17-v5) and the corpus repo's
 `scripts/eval-queries.json`. Override with `CORPUS=` / `QUERIES=`.
+
+---
+
+## Update 2026-06 — re-eval on the 73-query HARD set: a real win exists (HELD on size)
+
+After Phase C added 10 hard relational multi-hop queries (eval set 48→73; strata
+now top1/normal/ranked-low/recall-miss/**relational**), the reranker was re-measured
+against the harder set. The old "all rerankers regress" conclusion was **mode- and
+model-specific**. Findings (rel17-v5, `EXCLUDE_TEST_SPECS=1` = shipped-demotion-equivalent):
+
+| model + mode | overall ΔMRR@10 | ΔR@1 | ΔR@10 | relational | ranked-low | top1 |
+|---|---|---|---|---|---|---|
+| ms-marco-MiniLM · replace | −4.0 | −2.7 | −5.5 | −4.8 MRR | **−11.0 MRR** | −5.6 |
+| ms-marco-MiniLM · fuse | −0.6 | +2.7 | −4.1 | −4.1 MRR | −6.2 MRR | 0.0 |
+| **bge-reranker-base · fuse** | **+2.9** | **+5.5** | −2.7 | **+5.2 MRR / +7.7 R@1** | **+7.7 R@1** | −11.1 (1 of 9) |
+| bge-reranker-base · replace | −0.9 | −1.4 | −2.7 | +8.3 MRR | +2.2 MRR | **−36.9 MRR** |
+
+**The winner: `bge-reranker-base` + `fuse` mode** — +2.9 MRR@10 / +5.5 R@1 overall,
+and it helps the *exact* failure modes the Phase C eval was built to expose
+(relational +7.7 R@1, ranked-low +7.7 R@1). Two non-negotiables: (1) the weak
+`ms-marco-MiniLM` cross-encoder never wins — it misaligns with 3GPP normative text;
+(2) `replace` mode tanks top-1 (it lets a noisy reranker fully override hybrid);
+**`fuse` (RRF of reranker order ⊕ hybrid order) is essential** and protects top-1.
+
+### Why it's HELD, not shipped (decision 2026-06-08)
+- **Model size:** `bge-reranker-base` int8 ONNX = **266 MB** — >5× the whole 45 MB
+  corpus, +244 MB over the dormant 22 MB ms-marco. Bundling it in the installer is
+  disproportionate; a runtime-download delivery (like the corpus) is the right
+  mechanism but is real implementation work.
+- **Impl gap:** the shipped `reranker-ce.ts`/`retriever.ts` path does `replace`
+  only. Enabling the win needs **fuse mode added** to the production rerank wiring.
+- **Cost vs benefit today:** +5.5 R@1 is real but bought with a 266 MB model,
+  ~1–2 s/query CPU latency, 1 top-1 demotion, and R@10 −2.7. Not worth it yet.
+
+**Decision:** keep the reranker **dormant**; record the winning config here.
+**Revisit when** a smaller strong reranker (e.g. a distilled/low-bit bge-reranker, or
+a domain-tuned MiniLM-scale cross-encoder) lands, or when a runtime-download model
+delivery is built. The 73-query set + `GROUP_BY=mode` make this a one-command re-gate.
+
+Reproduce the win:
+```bash
+RERANK_MODEL=Xenova/bge-reranker-base RERANK_MODE=fuse GROUP_BY=mode \
+  EXCLUDE_TEST_SPECS=1 node scripts/dev-rerank-eval.mjs
+```
+(n=73 is modest — treat as directional; re-confirm on a larger eval before shipping.)
