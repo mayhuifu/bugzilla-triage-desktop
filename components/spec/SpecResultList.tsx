@@ -17,10 +17,11 @@ interface Props {
   corpusInstalled: boolean;
   onOpen: (citation: string, title?: string) => void;
   onCreateTicket?: (result: SpecSearchResult) => void;
+  ranking?: "hybrid" | "llm";
 }
 
 export function SpecResultList({
-  results, loading, query, corpusInstalled, onOpen, onCreateTicket,
+  results, loading, query, corpusInstalled, onOpen, onCreateTicket, ranking,
 }: Props) {
   // No corpus downloaded yet — point the user at Settings rather than
   // showing an empty result list that looks like a search miss.
@@ -91,6 +92,7 @@ export function SpecResultList({
           rank={i + 1}
           onOpen={onOpen}
           onCreateTicket={onCreateTicket}
+          ranking={ranking}
         />
       ))}
     </div>

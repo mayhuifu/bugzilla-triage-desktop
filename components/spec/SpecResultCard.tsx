@@ -20,6 +20,8 @@ export interface SpecSearchResult {
   matchedAs?: "exact" | "ancestor";
   hasFigures?: boolean;
   hasTables?: boolean;
+  hybridRank?: number;
+  rank?: number;
 }
 
 interface Props {
@@ -29,9 +31,20 @@ interface Props {
   /** Optional cross-feature hook — when provided a "New ticket" affordance
    *  shows, prefilling a bug about this clause (Phase 5 glue). */
   onCreateTicket?: (result: SpecSearchResult) => void;
+  /** When "llm", renders the rank-delta badge comparing AI vs hybrid position. */
+  ranking?: "hybrid" | "llm";
 }
 
-export function SpecResultCard({ result, rank, onOpen, onCreateTicket }: Props) {
+function RankDelta({ hybridRank, rank }: { hybridRank?: number; rank: number }) {
+  if (hybridRank == null) return <span title="new to top results under AI rerank" className="text-amber-400 text-xs font-medium">★ new</span>;
+  const d = hybridRank - rank;
+  if (d === 0) return <span className="text-slate-500 text-xs" title="unchanged vs hybrid">•</span>;
+  return d > 0
+    ? <span className="text-emerald-400 text-xs font-medium" title={`up ${d} vs hybrid (was #${hybridRank})`}>▲{d}</span>
+    : <span className="text-rose-400 text-xs font-medium" title={`down ${-d} vs hybrid (was #${hybridRank})`}>▼{-d}</span>;
+}
+
+export function SpecResultCard({ result, rank, onOpen, onCreateTicket, ranking }: Props) {
   return (
     <div
       role="button"
@@ -62,6 +75,9 @@ export function SpecResultCard({ result, rank, onOpen, onCreateTicket }: Props) 
               </span>
             )}
             <span className="text-[10px] text-slate-600 font-mono ml-auto">#{rank}</span>
+            {ranking === "llm" && result.rank != null && (
+              <RankDelta hybridRank={result.hybridRank} rank={result.rank} />
+            )}
           </div>
           {result.title && (
             <div className="text-sm text-slate-200 mt-0.5 font-medium truncate" title={result.title}>

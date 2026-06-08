@@ -36,6 +36,8 @@ interface SearchResponse {
   retrieverPath: string;
   hybridActive: boolean;
   results: SpecSearchResult[];
+  rerankAvailable?: boolean;
+  ranking?: "hybrid" | "llm";
 }
 
 export default function SpecPage() {
@@ -48,6 +50,8 @@ export default function SpecPage() {
   const [lastSearched, setLastSearched] = useState("");
   const [openCitation, setOpenCitation] = useState<string | null>(null);
   const [recent, setRecent] = useState<RecentClause[]>([]);
+  const [ranking, setRanking] = useState<"hybrid" | "llm">("hybrid");
+  const [rerankAvailable, setRerankAvailable] = useState(false);
   // Monotonic request id so a slow earlier search can't clobber a faster
   // later one (the debounce fires overlapping fetches as the user types).
   const reqIdRef = useRef(0);
@@ -71,7 +75,7 @@ export default function SpecPage() {
     });
   }, []);
 
-  const runSearch = useCallback(async (q: string) => {
+  const runSearch = useCallback(async (q: string, rankingOverride?: "hybrid" | "llm") => {
     const trimmed = q.trim();
     if (!trimmed) {
       setResults([]);
@@ -81,13 +85,19 @@ export default function SpecPage() {
     const myId = ++reqIdRef.current;
     setLoading(true);
     try {
-      const res = await fetch(`/api/corpus/search?q=${encodeURIComponent(trimmed)}&limit=25`);
+      const activeRanking = rankingOverride ?? ranking;
+      const rerankQS = activeRanking === "llm" ? "&rerank=llm" : "";
+      const res = await fetch(`/api/corpus/search?q=${encodeURIComponent(trimmed)}&limit=25${rerankQS}`);
       const data: SearchResponse = await res.json();
       if (myId !== reqIdRef.current) return; // a newer search already landed
       setResults(data.results || []);
       setCorpusInstalled(data.corpusInstalled);
       setRetrieverPath(data.retrieverPath || "");
       setHybridActive(!!data.hybridActive);
+      setRerankAvailable(!!data.rerankAvailable);
+      // If we requested LLM rerank but the server downgraded (no provider configured),
+      // snap back to hybrid so the UI stays consistent with the actual ranking used.
+      if (activeRanking === "llm" && data.ranking !== "llm") setRanking("hybrid");
       setLastSearched(trimmed);
       // Deep-link the query so reload / back / share reproduces the search.
       const u = new URL(window.location.href);
@@ -100,6 +110,24 @@ export default function SpecPage() {
     } finally {
       if (myId === reqIdRef.current) setLoading(false);
     }
+  }, [ranking]);
+
+  // ── Re-search when ranking toggle changes (only if a search is active) ──
+  // We track the ranking that was used for the current results so we can
+  // avoid a redundant re-fetch on mount (lastSearched is "" initially).
+  const prevRankingRef = useRef<"hybrid" | "llm">(ranking);
+  useEffect(() => {
+    if (prevRankingRef.current === ranking) return; // no actual change
+    prevRankingRef.current = ranking;
+    if (lastSearched) runSearch(lastSearched, ranking);
+  }, [ranking, lastSearched, runSearch]);
+
+  // ── Probe rerankAvailable on mount (before first search) ─────────
+  useEffect(() => {
+    fetch("/api/corpus/search?q=")
+      .then(r => r.json())
+      .then((d: SearchResponse) => { setRerankAvailable(!!d.rerankAvailable); })
+      .catch(() => {});
   }, []);
 
   // ── Deep-link bootstrap (read once on mount) ──────────────────────
@@ -161,7 +189,21 @@ export default function SpecPage() {
               Runs locally — no LLM, works offline.
             </p>
           </div>
-          <RetrieverBadge installed={corpusInstalled} path={retrieverPath} hybrid={hybridActive} />
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <RetrieverBadge installed={corpusInstalled} path={retrieverPath} hybrid={hybridActive} />
+            <div className="inline-flex rounded-md border border-slate-700 overflow-hidden text-xs">
+              <button
+                onClick={() => setRanking("hybrid")}
+                className={ranking === "hybrid" ? "bg-slate-700 px-2 py-1" : "px-2 py-1 text-slate-400 hover:text-slate-200"}
+              >Hybrid</button>
+              <button
+                onClick={() => rerankAvailable && setRanking("llm")}
+                disabled={!rerankAvailable}
+                title={rerankAvailable ? "Rerank results with your configured AI provider" : "Configure an AI provider in Settings to enable AI rerank"}
+                className={ranking === "llm" ? "bg-indigo-700 px-2 py-1" : `px-2 py-1 text-slate-400 hover:text-slate-200 ${!rerankAvailable ? "opacity-40 cursor-not-allowed hover:text-slate-400" : ""}`}
+              >✨ AI rerank</button>
+            </div>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)] gap-6 items-start">
@@ -196,6 +238,7 @@ export default function SpecPage() {
               query={lastSearched}
               corpusInstalled={corpusInstalled}
               onOpen={onOpen}
+              ranking={ranking}
             />
           </div>
         </div>
