@@ -29,6 +29,8 @@ import { getCorpusEmbedder } from "./embedder";
 import { ensureBgeEmbedderRegistered } from "./embedder-bge";
 import { getCorpusReranker, type CorpusReranker } from "./reranker";
 import { ensureRerankerRegistered } from "./reranker-ce";
+import { getLlmReranker } from "./reranker-llm";
+import { hasConfiguredLlmProvider } from "@/lib/llm";
 
 /** Structured table lifted from the v2 corpus's `tables_json` column.
  *  The corpus pipeline (bugzilla-triage-corpus 02-parse.ts) extracts these
@@ -84,7 +86,11 @@ export interface RetrievedClause {
    *  differs from the raw RRF fusion. */
   rerankScore?: number;
   /** Retrieval source label for the SpecDrawer / debug surface. */
-  retrieverPath?: "bm25-v1" | "bm25-v2" | "hybrid-rrf" | "hybrid-rrf+rerank";
+  retrieverPath?: "bm25-v1" | "bm25-v2" | "hybrid-rrf" | "hybrid-rrf+rerank" | "hybrid-rrf+llm-rerank";
+  /** 1-based position in the pre-rerank hybrid order. Present only on
+   *  LLM-reranked results ("hybrid-rrf+llm-rerank" path). Lets the UI
+   *  show the rank delta (e.g. "was #3 in hybrid, now #1 after LLM rerank"). */
+  hybridRank?: number;
   /** Structured tables (v2 only). Empty array on v1 corpora. */
   tables?: ClauseTable[];
   /** Figure references (v2 only). */
@@ -313,6 +319,19 @@ function getActiveReranker(): CorpusReranker | null {
   return getCorpusReranker();
 }
 
+/** Reciprocal-rank fusion of two orderings of the same id set. Returns ids
+ *  sorted by fused score desc. `1/(k+rank)` for each list; ids in both get
+ *  both terms. This protects top-1 (a strong hybrid #1 can't be fully
+ *  overridden by a noisy reranker) — the combo that won the eval. */
+function fuseOrders(hybridIds: string[], rerankedIds: string[], k = 60): string[] {
+  const rank = (ids: string[]) => new Map(ids.map((id, i) => [id, i + 1]));
+  const hr = rank(hybridIds), rr = rank(rerankedIds);
+  const all = new Set([...hybridIds, ...rerankedIds]);
+  const score = (id: string) =>
+    (hr.has(id) ? 1 / (k + hr.get(id)!) : 0) + (rr.has(id) ? 1 / (k + rr.get(id)!) : 0);
+  return [...all].sort((a, b) => score(b) - score(a));
+}
+
 /** Build the passage string handed to the cross-encoder for a candidate.
  *  The clause TITLE (and parent title) is load-bearing: 3GPP bodies
  *  abbreviate to acronyms the title spells out (e.g. body "PDSCH" vs title
@@ -389,6 +408,7 @@ async function hybridRetrieve(
   queryText: string,
   limit: number = TOP_K,
   rerankQuery?: string,
+  rerank?: "llm",
 ): Promise<RetrievedClause[]> {
   const db = getCorpusDb();
   const embedder = getCorpusEmbedder();
@@ -448,6 +468,39 @@ async function hybridRetrieve(
     // eslint-disable-next-line no-console
     console.warn(`[corpus] hybrid retrieval failed:`, err);
     return [];
+  }
+
+  // LLM rerank (opt-in, search-only — never invoked by triage callers).
+  // Fuses the hybrid order with the LLM's listwise ranking via RRF so
+  // a strong hybrid #1 can't be fully overridden by a noisy LLM signal.
+  // Falls through to the plain hybrid return on any failure.
+  if (rerank === "llm" && hasConfiguredLlmProvider()) {
+    const demoted = demoteTestSpecs(candidates);
+    const pool = demoted.slice(0, RERANK_CANDIDATE_K);
+    const hybridIds = pool.map(c => c.clauseId);
+    const hybridRankById = new Map(hybridIds.map((id, i) => [id, i + 1]));
+    try {
+      const scores = await getLlmReranker().rerank(
+        rerankQuery || queryText,
+        pool.map(rerankPassage),
+      );
+      const rerankedIds = pool
+        .map((c, i) => ({ id: c.clauseId, s: scores[i] ?? -Infinity }))
+        .sort((a, b) => b.s - a.s)
+        .map(x => x.id);
+      const fusedIds = fuseOrders(hybridIds, rerankedIds);
+      const byId = new Map(pool.map(c => [c.clauseId, c]));
+      const fused = fusedIds.map(id => byId.get(id)!).filter(Boolean).map(c => ({
+        ...c,
+        retrieverPath: "hybrid-rrf+llm-rerank" as const,
+        hybridRank: hybridRankById.get(c.clauseId),
+      }));
+      return fused.slice(0, limit);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[corpus] LLM rerank failed; returning hybrid:", err);
+      // fall through to the plain hybrid return below
+    }
   }
 
   // No reranker (default) → demote test specs as the final ranking step,
@@ -532,6 +585,12 @@ export interface RetrieveByTextOptions {
    *  TOP_K (the prompt-injection budget); the /spec search list passes a
    *  larger value. */
   limit?: number;
+  /** Opt-in LLM rerank — fires only when a provider is configured.
+   *  Applies RRF fusion of the hybrid order and the LLM's ranking, then
+   *  returns the top `limit` with retrieverPath="hybrid-rrf+llm-rerank"
+   *  and hybridRank set to the pre-rerank position. Triage callers do NOT
+   *  pass this option. */
+  rerank?: "llm";
 }
 
 /** Free-text retrieval — the standalone-search counterpart to
@@ -555,7 +614,7 @@ export async function retrieveByText(
   if (path === "hybrid-rrf") {
     const q = buildQueryFromText(trimmed, /*useAcronymExpansion=*/ true);
     // The search-box text is already concise — reuse it as the rerank query.
-    const hits = await hybridRetrieve(q.match, trimmed, limit, trimmed);
+    const hits = await hybridRetrieve(q.match, trimmed, limit, trimmed, opts.rerank);
     if (hits.length > 0) return hits;
     return bm25Retrieve(q.match, "bm25-v2", limit);
   }
