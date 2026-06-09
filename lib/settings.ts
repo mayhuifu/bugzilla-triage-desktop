@@ -27,6 +27,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { appDataDir } from "./paths";
 export { appDataDir };
+import { getCurrentUser } from "./users/context";
 
 const SETTINGS_FILE_NAME = "settings.json";
 const SCHEMA_VERSION = 1;
@@ -361,4 +362,36 @@ export function settingsForUi(s: Settings): SettingsForUi {
 
 export function isBugzillaConfigured(s: Settings = loadSettings()): boolean {
   return Boolean(s.bugzillaUrl && s.bugzillaApiKey);
+}
+
+/** True when running as the hosted multi-user server (vs the single-user
+ *  desktop build). Gated entirely by the MULTI_USER env flag. */
+export function isMultiUser(): boolean {
+  return process.env.MULTI_USER === "1";
+}
+
+/** The settings to use for the CURRENT operation.
+ *  - Desktop mode (default): the global settings.json — byte-identical to today
+ *    (early return; the user-context machinery is never touched).
+ *  - Server mode (MULTI_USER=1): the env-global base (bugzillaUrl / insecure /
+ *    corpus) overlaid with the CURRENT request's user (their Bugzilla key + LLM
+ *    config). If the user opted into the company LLM, the LLM fields come from
+ *    COMPANY_LLM_* env. Outside any request scope (no current user) returns the
+ *    base only. */
+export function getEffectiveSettings(): Settings {
+  if (!isMultiUser()) return loadSettings();
+  const base = loadSettings();
+  const u = getCurrentUser();
+  if (!u) return base;
+  const company = u.useCompanyLlm;
+  return {
+    ...base,
+    bugzillaApiKey: u.bugzillaApiKey,
+    bugzillaLogin: u.email,
+    llmProvider: (company ? (process.env.COMPANY_LLM_PROVIDER || "openai-compatible") : u.llmProvider) as LlmProvider,
+    llmBaseUrl: company ? (process.env.COMPANY_LLM_BASE_URL || "") : u.llmBaseUrl,
+    anthropicApiKey: company ? (process.env.COMPANY_LLM_API_KEY || "") : u.llmApiKey,
+    defaultModel: company ? (process.env.COMPANY_LLM_MODEL || u.defaultModel) : u.defaultModel,
+    themeMode: (u.themeMode || base.themeMode) as ThemeMode,
+  };
 }
