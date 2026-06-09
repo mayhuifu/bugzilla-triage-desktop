@@ -28,7 +28,7 @@
 | `lib/settings.ts` | Modify | Add `isMultiUser()` + `getEffectiveSettings()` (dual-mode). `loadSettings()` untouched. |
 | `app/api/setup/route.ts` | Create | `POST` self-register (validate Bugzilla, upsert profile, create session, set cookie); `GET` setup status. |
 | `app/setup/page.tsx` | Create | Onboarding form (email + Bugzilla key + LLM choice incl. company default). |
-| `scripts/dev-users-selfcheck.mjs` | Create | Round-trip checks for crypto + store (no server needed). |
+| `scripts/dev-users-selfcheck.ts` | Create | Round-trip checks for crypto + store, run via `npx tsx` (adds `tsx` devDep; no server needed). |
 
 **Out of Phase 1** (Phase 2/3): `withUser()` on routes, `bugzilla.ts`/`llm.ts` switching to `getEffectiveSettings()`, `middleware.ts` setup-gate, Dockerfile, rate-limit, audit log. Phase 1 builds + unit-checks the pieces; it does NOT yet gate the app.
 
@@ -114,7 +114,7 @@ EOF
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { randomBytes } from "node:crypto";
-import { appDataDir } from "@/lib/settings";
+import { appDataDir } from "../settings";   // relative (not @/) so the tsx self-check loads it without path-alias config
 import { encryptSecret, decryptSecret } from "./crypto";
 
 const require = createRequire(import.meta.url);
@@ -241,18 +241,16 @@ EOF
 - [ ] **Step 1: Write the self-check** (uses a temp DB + APP_SECRET; no Next server)
 
 ```javascript
-// scripts/dev-users-selfcheck.mjs — verify crypto round-trip + store CRUD/session
-// against a throwaway profiles.db. Run: node scripts/dev-users-selfcheck.mjs
-import { createRequire } from "node:module";
+// scripts/dev-users-selfcheck.ts — verify crypto round-trip + store CRUD/session
+// against a throwaway profiles.db. Run: npx tsx scripts/dev-users-selfcheck.ts
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
 process.env.APP_SECRET = "selfcheck-secret-key-0123456789";
 process.env.PROFILES_DB = path.join(os.tmpdir(), `profiles-selfcheck-${process.pid}.db`);
-const require = createRequire(import.meta.url);
-const tsx = require("tsx/cjs/api"); // load TS modules from a .mjs harness
-const { encryptSecret, decryptSecret } = tsx.require("../lib/users/crypto.ts", import.meta.url);
-const store = tsx.require("../lib/users/store.ts", import.meta.url);
+// Dynamic imports AFTER env is set; relative paths so tsx needs no alias config.
+const { encryptSecret, decryptSecret } = await import("../lib/users/crypto.ts");
+const store = await import("../lib/users/store.ts");
 const assert = (c, m) => { if (!c) { console.error("FAIL:", m); process.exit(1); } };
 
 // crypto round-trip + tamper
@@ -281,19 +279,22 @@ fs.rmSync(process.env.PROFILES_DB + "-shm", { force: true });
 console.log("✓ users selfcheck passed (crypto round-trip + tamper, store CRUD, sessions)");
 ```
 
-NOTE: if `tsx/cjs/api`'s `tsx.require` signature differs in the installed tsx version, the implementer adapts to load the two TS modules (e.g. `import` with a tsx loader, or compile-on-the-fly). The assertions are the contract.
+NOTE: the desktop has no TS-script runner, so Step 2 adds `tsx` as a devDependency. The assertions are the contract.
 
-- [ ] **Step 2: Run it**
+- [ ] **Step 2: Add the tsx dev runner + run the self-check**
 
-Run: `node scripts/dev-users-selfcheck.mjs`
-Expected: `✓ users selfcheck passed …`
+```bash
+npm install --save-dev tsx          # dev-only TS-script runner (desktop had none)
+npx tsx scripts/dev-users-selfcheck.ts
+```
+Expected: `✓ users selfcheck passed …`. If `await import("../lib/users/crypto.ts")` errors on the `.ts` extension, drop the extension (`"../lib/users/crypto"`) — tsx resolves either, version-depending.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add scripts/dev-users-selfcheck.mjs
+git add scripts/dev-users-selfcheck.ts package.json package-lock.json
 git commit -m "$(cat <<'EOF'
-test(users): self-check for crypto round-trip + profile store + sessions
+test(users): self-check for crypto + store + sessions (+ tsx dev runner)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
@@ -399,10 +400,11 @@ IMPORTANT: do NOT change `loadSettings()` or `readConfig()` callers in this task
 Run:
 ```bash
 npx tsc --noEmit 2>&1 | grep -E "lib/settings.ts" || echo "✓ settings clean"
-# Desktop mode: getEffectiveSettings === loadSettings (MULTI_USER unset)
-node -e 'process.env.SETTINGS_PATH="/tmp/none.json"; const tsx=require("tsx/cjs/api"); const s=tsx.require("./lib/settings.ts", "file://"+process.cwd()+"/"); const a=JSON.stringify(s.getEffectiveSettings()), b=JSON.stringify(s.loadSettings()); console.log(a===b ? "✓ desktop mode: getEffectiveSettings == loadSettings" : "✗ DIVERGED");'
+# Desktop mode (MULTI_USER unset): getEffectiveSettings === loadSettings. tsx loads
+# settings.ts → users/context (relative); store is type-only there, so no @/ alias is hit.
+SETTINGS_PATH=/tmp/none.json npx tsx -e 'const s = await import("./lib/settings.ts"); const a = JSON.stringify(s.getEffectiveSettings()), b = JSON.stringify(s.loadSettings()); console.log(a === b ? "✓ desktop mode: getEffectiveSettings == loadSettings" : "✗ DIVERGED");'
 ```
-Expected: `✓ settings clean` and `✓ desktop mode: getEffectiveSettings == loadSettings`. (Adapt the tsx-load line to the installed tsx API if needed.)
+Expected: `✓ settings clean` and `✓ desktop mode: getEffectiveSettings == loadSettings`. (Requires the `tsx` devDep from Task 3.)
 
 - [ ] **Step 3: Commit**
 
