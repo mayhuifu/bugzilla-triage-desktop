@@ -35,7 +35,7 @@ import * as os from "node:os";
 import { randomBytes } from "node:crypto";
 
 import type { TicketDetail, TriageResult, SpecExcerpt } from "./types";
-import { loadSettings, type LlmProvider } from "./settings";
+import { getEffectiveSettings, type LlmProvider } from "./settings";
 import { lookupClause, corpusHasSpec, type RetrievedClause } from "./corpus/retriever";
 import { getCorpusDb, getFigureImageBlob } from "./corpus/store";
 import { attachments as fetchAttachments } from "./bugzilla";
@@ -676,7 +676,7 @@ export async function runTriage(
   ticket: TicketDetail,
   opts: TriageOptions = {},
 ): Promise<TriageResult> {
-  const s = loadSettings();
+  const s = getEffectiveSettings();
   const userPrompt = buildUserPrompt(ticket, opts.followup, opts.retrievedClauses);
 
   // Default to enriching unless the caller explicitly disabled it. The
@@ -813,7 +813,7 @@ export async function runTriage(
  *  use a subscription (no key), SDK providers need a key (and a baseURL for
  *  openai-compatible). Used to gate the opt-in LLM reranker — never to gate
  *  plain hybrid search. */
-export function hasConfiguredLlmProvider(s = loadSettings()): boolean {
+export function hasConfiguredLlmProvider(s = getEffectiveSettings()): boolean {
   switch (s.llmProvider) {
     case "claude-cli":
     case "codex-cli":
@@ -1178,7 +1178,7 @@ export async function runLlmText(
   user: string,
   opts: { model?: string; maxTokens?: number; timeoutMs?: number } = {},
 ): Promise<string> {
-  const s = loadSettings();
+  const s = getEffectiveSettings();
   const maxTokens = opts.maxTokens ?? 1024;
   const timeoutMs = opts.timeoutMs ?? 12_000;
 

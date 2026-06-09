@@ -6,7 +6,7 @@
 import "server-only";
 import type { CorpusReranker } from "./reranker";
 import { runLlmText, hasConfiguredLlmProvider } from "@/lib/llm";
-import { loadSettings } from "@/lib/settings";
+import { getEffectiveSettings } from "@/lib/settings";
 
 const SYSTEM = "You are a precise information-retrieval relevance ranker for 3GPP " +
   "telecom specifications. You only output JSON.";
@@ -42,7 +42,7 @@ function parseOrder(raw: string, n: number): number[] {
 export class LlmReranker implements CorpusReranker {
   readonly modelId: string;
   constructor() {
-    const s = loadSettings();
+    const s = getEffectiveSettings();
     this.modelId = `llm:${s.llmProvider}:${s.defaultModel || "default"}`;
   }
   async rerank(query: string, passages: string[]): Promise<number[]> {
