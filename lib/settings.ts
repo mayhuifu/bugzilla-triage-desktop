@@ -381,11 +381,21 @@ export function isMultiUser(): boolean {
 export function getEffectiveSettings(): Settings {
   if (!isMultiUser()) return loadSettings();
   const base = loadSettings();
+  // In server mode the SHARED Bugzilla endpoint is server-controlled via env —
+  // it must NOT be shadowed by a stray settings.json on the host (loadSettings
+  // lets the file win over env). Only the API key is per-user; URL + insecure
+  // are server-global, so the deploy's BUGZILLA_URL/BUGZILLA_INSECURE win here.
+  const serverUrl = (process.env.BUGZILLA_URL || base.bugzillaUrl || "").replace(/\/$/, "");
+  const serverInsecure = process.env.BUGZILLA_INSECURE != null
+    ? process.env.BUGZILLA_INSECURE.toLowerCase() === "true"
+    : base.bugzillaInsecure;
   const u = getCurrentUser();
-  if (!u) return base;
+  if (!u) return { ...base, bugzillaUrl: serverUrl, bugzillaInsecure: serverInsecure };
   const company = u.useCompanyLlm;
   return {
     ...base,
+    bugzillaUrl: serverUrl,
+    bugzillaInsecure: serverInsecure,
     bugzillaApiKey: u.bugzillaApiKey,
     bugzillaLogin: u.email,
     llmProvider: (company ? (process.env.COMPANY_LLM_PROVIDER || "openai-compatible") : u.llmProvider) as LlmProvider,
