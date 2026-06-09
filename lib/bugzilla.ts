@@ -22,7 +22,7 @@ import type {
   ProductInfo, WhoAmI, DashboardStats, Severity,
 } from "./types";
 import { OPEN_STATUSES, CLOSED_STATUSES } from "./types";
-import { loadSettings } from "./settings";
+import { getEffectiveSettings } from "./settings";
 
 // ── Configuration ─────────────────────────────────────────────────
 
@@ -56,9 +56,9 @@ interface BugzillaConfig {
 }
 
 function readConfig(): BugzillaConfig {
-  // Settings file wins over env vars; the file already merges env as a
-  // fallback for unset fields, so this single source is sufficient.
-  const s = loadSettings();
+  // Desktop: global settings. Server mode: the request's user (their Bugzilla
+  // key) via getEffectiveSettings() → all reads/writes act AS them.
+  const s = getEffectiveSettings();
   return {
     url: (s.bugzillaUrl || "").replace(/\/$/, ""),
     apiKey: s.bugzillaApiKey,
