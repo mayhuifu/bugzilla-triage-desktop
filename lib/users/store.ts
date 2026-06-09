@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
 
-import { appDataDir } from "../settings";   // relative (not @/) so the tsx self-check loads it without path-alias config
+import { appDataDir } from "../paths";   // pure path helper (no server-only marker) so the tsx self-check can load this module
 import { encryptSecret, decryptSecret } from "./crypto";
 
 const require = createRequire(import.meta.url);

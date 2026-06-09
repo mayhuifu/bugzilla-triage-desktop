@@ -25,10 +25,10 @@
 import "server-only";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
+import { appDataDir } from "./paths";
+export { appDataDir };
 
 const SETTINGS_FILE_NAME = "settings.json";
-const APP_DIR_NAME = "bugzilla-triage-desktop";
 const SCHEMA_VERSION = 1;
 
 /** Which SDK the triage step uses.
@@ -159,25 +159,8 @@ const EMPTY_SETTINGS: Settings = {
 
 // ── Where the file lives ──────────────────────────────────────────
 
-/** OS-appropriate per-user app-data directory. Mirrors the convention
- * Electron's `app.getPath("userData")` will produce in milestone 4,
- * so settings written now will still be found after we wrap in
- * Electron. */
-export function appDataDir(): string {
-  const platform = os.platform();
-  const home = os.homedir();
-  if (platform === "win32") {
-    // %APPDATA%\bugzilla-triage-desktop
-    const appData = process.env.APPDATA || path.join(home, "AppData", "Roaming");
-    return path.join(appData, APP_DIR_NAME);
-  }
-  if (platform === "darwin") {
-    return path.join(home, "Library", "Application Support", APP_DIR_NAME);
-  }
-  // Linux & friends — XDG_CONFIG_HOME or ~/.config
-  const xdg = process.env.XDG_CONFIG_HOME || path.join(home, ".config");
-  return path.join(xdg, APP_DIR_NAME);
-}
+// appDataDir() now lives in ./paths (imported + re-exported near the top) — a
+// pure path helper free of the `server-only` marker so dev/CLI scripts can use it.
 
 function settingsPath(): string {
   // SETTINGS_PATH env override exists primarily for tests and for the
