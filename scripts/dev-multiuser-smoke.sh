@@ -42,4 +42,23 @@
 # PASS when: (1) 401 without session; (2)/(3) each browser resolves to the right
 # identity; (4) writes are attributed to the acting user in Bugzilla; (5) two
 # encrypted user rows + ≥2 sessions, no key leakage between users.
+#
+# ── GOTCHAS (read these — they bite) ──────────────────────────────────────────
+#  • USE http://localhost:3000 IN THE BROWSER. The bt_session cookie is Secure;
+#    browsers store Secure cookies on localhost/127.0.0.1 even over plain HTTP,
+#    but DROP them on a bare LAN IP (http://10.x / http://hostname) — so login
+#    silently won't stick there. For LAN/remote access you need HTTPS (Phase 3
+#    reverse proxy). For this local smoke, localhost is fine.
+#  • TWO INDEPENDENT COOKIE JARS = two users. Use two Chrome profiles, or one
+#    normal + one Incognito window, or two different browsers. Two tabs in the
+#    same profile share one cookie → they are the SAME user.
+#  • TRUE attribution needs two DISTINCT Bugzilla accounts/keys. One key under
+#    two emails exercises the plumbing (sessions, isolation, storage) but both
+#    comments post as the same Bugzilla user — so it can't prove attribution.
+#  • Run on a host that can REACH Bugzilla (corporate network / VPN). The server
+#    process makes the Bugzilla calls, not your browser.
+#  • Pick a STABLE APP_SECRET. It derives the AES key for profiles.db — change it
+#    and existing encrypted profiles can no longer be decrypted (wipe the db).
+#  • No real keys handy? Run the offline plumbing proof instead — no account
+#    needed: scripts/dev-fake-bugzilla.mjs + scripts/dev-twouser-test.mjs.
 echo "This is a runbook — read the comments. It needs two real Bugzilla keys."
