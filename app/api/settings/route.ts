@@ -1,28 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   loadSettings, saveSettings, validateSettings, settingsForUi,
-  isBugzillaConfigured, type Settings,
+  isBugzillaConfigured, isMultiUser, type Settings,
 } from "@/lib/settings";
 import { bumpServerCacheVersion } from "@/lib/server-cache";
+import { withUser } from "@/lib/users/with-user";
 
 export const dynamic = "force-dynamic";
 
 // GET — return the settings the UI should display. Secrets are stripped
 // here: the page never sees the raw Bugzilla or Anthropic API keys, only
 // a `hasFooKey` boolean for the "(saved)" indicator next to the input.
-export async function GET() {
+export const GET = withUser(async () => {
   const settings = loadSettings();
   return NextResponse.json({
     ...settingsForUi(settings),
     configured: isBugzillaConfigured(settings),
   });
-}
+});
 
 // POST — validate + persist. The page sends every editable field every
 // time. Secrets are handled with a sentinel: the page sends "" if the user
 // didn't touch the field, and we keep the prior stored value in that
 // case. That lets a user save a URL change without re-typing their API key.
-export async function POST(req: NextRequest) {
+export const POST = withUser(async (req: Request) => {
+  if (isMultiUser()) {
+    return NextResponse.json(
+      { error: "In server mode, settings are per-user — change them in /setup." },
+      { status: 403 },
+    );
+  }
   let body: Partial<Settings>;
   try {
     body = await req.json();
@@ -85,4 +92,4 @@ export async function POST(req: NextRequest) {
     configured: isBugzillaConfigured(next),
     saved: true,
   });
-}
+});

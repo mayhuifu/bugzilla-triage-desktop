@@ -18,13 +18,14 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { attachments } from "@/lib/bugzilla";
+import { withUser } from "@/lib/users/with-user";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(
-  _req: NextRequest,
+export const GET = withUser(async (
+  _req: Request,
   { params }: { params: Promise<{ id: string; attachmentId: string }> },
-) {
+) => {
   const { id, attachmentId } = await params;
   const ticketId = parseInt(id, 10);
   const attId = parseInt(attachmentId, 10);
@@ -61,4 +62,4 @@ export async function GET(
     const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: msg }, { status: 502 });
   }
-}
+});

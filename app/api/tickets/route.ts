@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { bridgeSearch } from "@/lib/bridge";
 import { mockSearch } from "@/lib/mock-data";
 import { OPEN_STATUSES, CLOSED_STATUSES, type TicketBucket } from "@/lib/types";
+import { withUser } from "@/lib/users/with-user";
 
 export const dynamic = "force-dynamic";
 
@@ -41,7 +42,7 @@ function expandBucket(bucket: TicketBucket | null): {
   return { status: baseStatus };
 }
 
-export async function GET(req: NextRequest) {
+export const GET = withUser(async (req: Request) => {
   const url = new URL(req.url);
   const sp = url.searchParams;
   const product = sp.get("product") || undefined;
@@ -86,4 +87,4 @@ export async function GET(req: NextRequest) {
       error: msg,
     });
   }
-}
+});

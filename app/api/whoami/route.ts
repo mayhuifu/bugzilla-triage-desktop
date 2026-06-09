@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { bridgeWhoami } from "@/lib/bridge";
 import { MOCK_WHOAMI } from "@/lib/mock-data";
 import { cached, CACHE_TTL } from "@/lib/server-cache";
+import { withUser } from "@/lib/users/with-user";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(req: NextRequest) {
+export const GET = withUser(async (req: Request) => {
   const url = new URL(req.url);
   const explicitMock = url.searchParams.get("mock") === "1";
   const fresh = url.searchParams.get("fresh") === "1";
@@ -20,4 +21,4 @@ export async function GET(req: NextRequest) {
     const msg = err instanceof Error ? err.message : "unknown";
     return NextResponse.json({ ...MOCK_WHOAMI, fetchedFrom: "mock-fallback", error: msg });
   }
-}
+});

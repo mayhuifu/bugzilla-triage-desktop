@@ -21,6 +21,7 @@
 
 import { NextResponse } from "next/server";
 import { getFigureImageBlob } from "@/lib/corpus/store";
+import { withUser } from "@/lib/users/with-user";
 
 export const dynamic = "force-dynamic";
 
@@ -81,7 +82,7 @@ function cropPageSvg(buf: Uint8Array): string | null {
   }
 }
 
-export async function GET(req: Request) {
+export const GET = withUser(async (req: Request) => {
   const url = new URL(req.url);
   const clauseId = url.searchParams.get("clauseId");
   const figureId = url.searchParams.get("figureId");
@@ -121,4 +122,4 @@ export async function GET(req: Request) {
       "Cache-Control": "private, max-age=3600",
     },
   });
-}
+});

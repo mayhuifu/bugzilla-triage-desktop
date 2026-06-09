@@ -4,6 +4,7 @@ import { buildMockStats } from "@/lib/mock-data";
 import { cached, CACHE_TTL } from "@/lib/server-cache";
 import type { StatsPart } from "@/lib/bugzilla";
 import type { DashboardStats } from "@/lib/types";
+import { withUser } from "@/lib/users/with-user";
 
 export const dynamic = "force-dynamic";
 // 14 parallel Bugzilla queries (split into 6 core + 8 trend); slow VPN can
@@ -24,7 +25,7 @@ function pickPart(full: DashboardStats, part: StatsPart) {
   return full;
 }
 
-export async function GET(req: NextRequest) {
+export const GET = withUser(async (req: Request) => {
   const url = new URL(req.url);
   const product = url.searchParams.get("product") || undefined;
   const component = url.searchParams.get("component") || undefined;
@@ -60,4 +61,4 @@ export async function GET(req: NextRequest) {
       error: msg,
     });
   }
-}
+});

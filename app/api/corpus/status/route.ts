@@ -6,6 +6,7 @@ import { activeRetrieverPath } from "@/lib/corpus/retriever";
 import { BGE_EMBEDDER_MODEL_ID } from "@/lib/corpus/embedder-bge";
 import { RERANKER_MODEL_ID } from "@/lib/corpus/reranker-ce";
 import { loadSettings } from "@/lib/settings";
+import { withUser } from "@/lib/users/with-user";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,7 @@ export const dynamic = "force-dynamic";
 //     and surfaces "update available". Without that flag, no network
 //     call is made — keeps the status poll loop (during a download)
 //     fast and offline-safe.
-export async function GET(req: Request) {
+export const GET = withUser(async (req: Request) => {
   const url = new URL(req.url);
   const checkRemote = url.searchParams.get("checkRemote") === "1";
 
@@ -105,4 +106,4 @@ export async function GET(req: Request) {
     remoteError,
     updateAvailable: remote ? isRemoteNewer(localManifest, remote) : false,
   });
-}
+});

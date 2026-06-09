@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { listSpecs, listSpecClauses } from "@/lib/corpus/store";
+import { withUser } from "@/lib/users/with-user";
 
 export const dynamic = "force-dynamic";
 
@@ -9,11 +10,11 @@ export const dynamic = "force-dynamic";
 // Backs the /spec browse sidebar. No LLM, no network — pure local SQLite
 // reads. Returns empty lists (200) when no corpus is installed so the
 // sidebar renders a calm "install the corpus" hint rather than erroring.
-export async function GET(req: Request) {
+export const GET = withUser(async (req: Request) => {
   const url = new URL(req.url);
   const spec = url.searchParams.get("spec");
   if (spec) {
     return NextResponse.json({ spec, clauses: listSpecClauses(spec) });
   }
   return NextResponse.json({ specs: listSpecs() });
-}
+});

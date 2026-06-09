@@ -7,6 +7,7 @@ import {
 } from "@/lib/corpus/retriever";
 import { getCorpusDb, getClauseMediaFlags } from "@/lib/corpus/store";
 import { hasConfiguredLlmProvider } from "@/lib/llm";
+import { withUser } from "@/lib/users/with-user";
 
 export const dynamic = "force-dynamic";
 
@@ -71,7 +72,7 @@ function toCard(
   };
 }
 
-export async function GET(req: Request) {
+export const GET = withUser(async (req: Request) => {
   const url = new URL(req.url);
   const q = (url.searchParams.get("q") || "").trim();
   const limitParam = parseInt(url.searchParams.get("limit") || "", 10);
@@ -139,4 +140,4 @@ export async function GET(req: Request) {
       rank: i + 1,
     })),
   });
-}
+});

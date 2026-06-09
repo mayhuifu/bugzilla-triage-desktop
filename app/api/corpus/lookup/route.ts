@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { lookupClause } from "@/lib/corpus/retriever";
+import { withUser } from "@/lib/users/with-user";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,7 @@ export const dynamic = "force-dynamic";
 //   GET /api/corpus/lookup?clause=3GPP%20TS%2038.211%20%C2%A76.3.1.1
 //   → { clauseId: "38.211#6.3.1.1", citation: "...", title: "Scrambling",
 //        parentTitle: "...", text: "<full clause text>" }
-export async function GET(req: Request) {
+export const GET = withUser(async (req: Request) => {
   const url = new URL(req.url);
   const clause = url.searchParams.get("clause");
   if (!clause) {
@@ -26,4 +27,4 @@ export async function GET(req: Request) {
     );
   }
   return NextResponse.json(result);
-}
+});

@@ -22,6 +22,7 @@
 import { NextResponse } from "next/server";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { withUser } from "@/lib/users/with-user";
 import {
   getCorpusDb,
   getCorpusMeta,
@@ -58,7 +59,7 @@ function traceLookup(reference: string): LookupTrace {
   };
 }
 
-export async function GET() {
+export const GET = withUser(async () => {
   try {
     const engineError = corpusEngineError();
     const meta = getCorpusMeta();
@@ -166,4 +167,4 @@ export async function GET() {
       { status: 500 },
     );
   }
-}
+});

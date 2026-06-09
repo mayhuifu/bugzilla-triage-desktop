@@ -2,14 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { bridgeFetch, bridgeTriage } from "@/lib/bridge";
 import { buildMockDetail } from "@/lib/mock-data";
 import { retrieveContext, retrieveContextAsync } from "@/lib/corpus/retriever";
+import { withUser } from "@/lib/users/with-user";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-export async function POST(
-  req: NextRequest,
+export const POST = withUser(async (
+  req: Request,
   { params }: { params: Promise<{ id: string }> }
-) {
+) => {
   const { id } = await params;
   const ticketId = parseInt(id);
   if (!ticketId) return NextResponse.json({ error: "invalid id" }, { status: 400 });
@@ -69,4 +70,4 @@ export async function POST(
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 502 });
   }
-}
+});

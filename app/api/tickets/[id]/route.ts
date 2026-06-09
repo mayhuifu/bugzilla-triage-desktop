@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { bridgeFetch } from "@/lib/bridge";
 import { buildMockDetail } from "@/lib/mock-data";
+import { withUser } from "@/lib/users/with-user";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(
-  req: NextRequest,
+export const GET = withUser(async (
+  req: Request,
   { params }: { params: Promise<{ id: string }> }
-) {
+) => {
   const { id } = await params;
   const ticketId = parseInt(id);
   if (!ticketId) return NextResponse.json({ error: "invalid id" }, { status: 400 });
@@ -36,4 +37,4 @@ export async function GET(
       return NextResponse.json({ error: msg }, { status: 502 });
     }
   }
-}
+});

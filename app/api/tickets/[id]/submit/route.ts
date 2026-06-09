@@ -2,16 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { bridgeSubmit, bridgeFetch } from "@/lib/bridge";
 import type { TriageSubmission, SubmissionReceipt, TicketStatus } from "@/lib/types";
 import { TICKET_STATUSES } from "@/lib/types";
+import { withUser } from "@/lib/users/with-user";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
 const ALLOWED_TRANSITIONS = new Set<TicketStatus>(TICKET_STATUSES);
 
-export async function POST(
-  req: NextRequest,
+export const POST = withUser(async (
+  req: Request,
   { params }: { params: Promise<{ id: string }> }
-) {
+) => {
   const { id } = await params;
   const ticketId = parseInt(id);
   if (!ticketId) return NextResponse.json({ error: "invalid id" }, { status: 400 });
@@ -89,4 +90,4 @@ export async function POST(
       message: `Failed to post via bridge: ${msg}`,
     }, { status: 502 });
   }
-}
+});

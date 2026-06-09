@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import * as https from "node:https";
 import * as http from "node:http";
 import { URL } from "node:url";
+import { withUser } from "@/lib/users/with-user";
 
 // Settings → Test connection.
 //
@@ -37,7 +38,7 @@ interface TestResult {
   whoami?: string;
 }
 
-export async function POST(req: NextRequest) {
+export const POST = withUser(async (req: Request) => {
   let body: TestRequest;
   try {
     body = await req.json();
@@ -112,7 +113,7 @@ export async function POST(req: NextRequest) {
       message: explainError(err),
     } satisfies TestResult);
   }
-}
+});
 
 // ── HTTP helper (matches lib/bugzilla.ts's node:https approach) ──
 

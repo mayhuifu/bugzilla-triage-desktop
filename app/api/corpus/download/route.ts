@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { fetchRemoteManifest } from "@/lib/corpus/manifest";
 import { downloadCorpus, getDownloadProgress } from "@/lib/corpus/downloader";
 import { loadSettings, saveSettings } from "@/lib/settings";
+import { withUser } from "@/lib/users/with-user";
 
 export const dynamic = "force-dynamic";
 
@@ -29,7 +30,7 @@ export const maxDuration = 600;
 // next process boot remembers which version is installed. We don't wait
 // for the download to finish to write this — the downloader updates it
 // on the way to "ready" status via writeLocalManifest().
-export async function POST(req: Request) {
+export const POST = withUser(async (req: Request) => {
   // Top-level try/catch so ANY unexpected failure (settings read,
   // appData mkdir, manifest URL validation, etc.) gets surfaced to the
   // UI as a readable error string instead of Next.js's opaque default
@@ -132,4 +133,4 @@ export async function POST(req: Request) {
       { status: 500 },
     );
   }
-}
+});

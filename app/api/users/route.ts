@@ -13,6 +13,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { bridgeFindUsers } from "@/lib/bridge";
+import { withUser } from "@/lib/users/with-user";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +26,7 @@ const MIN_MATCH = 2;
 // refine if their target isn't in the first batch.
 const MAX_RESULTS = 25;
 
-export async function GET(req: NextRequest) {
+export const GET = withUser(async (req: Request) => {
   const url = new URL(req.url);
   const match = (url.searchParams.get("match") ?? "").trim();
   if (match.length < MIN_MATCH) {
@@ -41,4 +42,4 @@ export async function GET(req: NextRequest) {
     // small "search failed" hint to the user.
     return NextResponse.json({ users: [], error: msg }, { status: 502 });
   }
-}
+});
