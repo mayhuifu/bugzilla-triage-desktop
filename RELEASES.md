@@ -12,6 +12,46 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.0 — Multi-user server platform
+
+**Tagged:** (pending)
+
+### Highlights
+
+The app can now be hosted on a company server and used by the whole team at
+once — while the **desktop build is byte-identical to v0.6.0** (every new code
+path is behind the `MULTI_USER=1` env flag).
+
+- **Self-service onboarding at `/setup`** — each engineer signs in once with
+  their work email + their own Bugzilla API key, and picks the company LLM
+  (DeepSeek via `COMPANY_LLM_*` env) or their own provider. Keys are validated
+  against Bugzilla before the account is created and stored encrypted
+  (AES-256-GCM, key derived from `APP_SECRET`).
+- **Act-as-user everywhere** — every request runs inside its session's user
+  context (AsyncLocalStorage): Bugzilla reads/writes use *that user's* key (so
+  comments are attributed to the real person), AI triage uses *their* LLM
+  config. All API routes are session-gated (401), page loads redirect to
+  `/setup`, and the server cache is per-user (no cross-user data leaks —
+  proven by `scripts/dev-twouser-test.mjs`, a no-real-account two-user
+  harness that runs against a fake Bugzilla).
+- **Production hardening** — per-user rate limits on the LLM-spending routes
+  (`RATE_TRIAGE_PER_MIN`, `RATE_RERANK_PER_MIN`) and an append-only JSONL
+  audit log of every Bugzilla write (`/data/audit.log`: who, what, which bug,
+  when).
+- **One-command deployment** — `Dockerfile` (multi-stage, standalone Next
+  payload + bge ONNX model + sqlite-vec, non-root, healthcheck) and
+  `deploy/` (docker-compose with a Caddy HTTPS proxy, `.env.example`, and an
+  IT runbook covering certs, backup, upgrade, smoke checklist and
+  troubleshooting). HTTPS is required off-localhost — the session cookie is
+  `Secure` by design.
+
+### Desktop users
+
+Nothing changes. No new settings, no behavior differences; v0.7.0 installers
+are functionally identical to v0.6.0.
+
+---
+
 ## v0.6.0 — LLM reranker (opt-in) + RedCap corpus (rel17-v6)
 
 **Tagged:** 2026-06-08
