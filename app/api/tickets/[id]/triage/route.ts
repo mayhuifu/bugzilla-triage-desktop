@@ -3,6 +3,7 @@ import { bridgeFetch, bridgeTriage } from "@/lib/bridge";
 import { buildMockDetail } from "@/lib/mock-data";
 import { retrieveContext, retrieveContextAsync } from "@/lib/corpus/retriever";
 import { withUser } from "@/lib/users/with-user";
+import { allowRate, rateEnv } from "@/lib/users/rate-limit";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -11,6 +12,12 @@ export const POST = withUser(async (
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) => {
+  if (!allowRate("triage", rateEnv("RATE_TRIAGE_PER_MIN", 6))) {
+    return NextResponse.json(
+      { error: "Rate limit: too many AI triage runs — try again in a minute." },
+      { status: 429 },
+    );
+  }
   const { id } = await params;
   const ticketId = parseInt(id);
   if (!ticketId) return NextResponse.json({ error: "invalid id" }, { status: 400 });

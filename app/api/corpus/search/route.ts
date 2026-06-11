@@ -8,6 +8,7 @@ import {
 import { getCorpusDb, getClauseMediaFlags } from "@/lib/corpus/store";
 import { hasConfiguredLlmProvider } from "@/lib/llm";
 import { withUser } from "@/lib/users/with-user";
+import { allowRate, rateEnv } from "@/lib/users/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -124,6 +125,12 @@ export const GET = withUser(async (req: Request) => {
   // provider is configured — otherwise we silently stay hybrid (offline floor).
   const rerankAvailable = hasConfiguredLlmProvider();
   const wantLlm = url.searchParams.get("rerank") === "llm" && rerankAvailable;
+  if (wantLlm && !allowRate("rerank", rateEnv("RATE_RERANK_PER_MIN", 20))) {
+    return NextResponse.json(
+      { error: "Rate limit: too many AI-reranked searches — try again in a minute." },
+      { status: 429 },
+    );
+  }
   const results = await retrieveByText(q, { limit, ...(wantLlm ? { rerank: "llm" as const } : {}) });
   const mediaFlags = getClauseMediaFlags(results.map(r => r.clauseId));
   return NextResponse.json({
