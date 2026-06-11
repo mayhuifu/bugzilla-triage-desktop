@@ -10,8 +10,16 @@
 # Run it behind HTTPS (see deploy/) — the session cookie is Secure and
 # browsers drop it over plain http on anything but localhost.
 # ─────────────────────────────────────────────────────────────────────────────
-FROM node:20-bookworm-slim AS build
+FROM node:22-bookworm-slim AS build
 WORKDIR /app
+# Toolchain for native deps: better-sqlite3 falls back to a node-gyp source
+# build when its prebuilt binary can't be fetched (common on firewalled build
+# hosts) — without python3/make/g++ that fallback hard-fails npm ci.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+ && rm -rf /var/lib/apt/lists/*
+# The Electron desktop binary is never used in the server image — skip its
+# ~100 MB postinstall download.
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
@@ -25,7 +33,7 @@ RUN npm run build
 # dynamic require the standalone tracer can't see.
 RUN mkdir -p /vecpkg && cp -r node_modules/sqlite-vec-linux-* /vecpkg/
 
-FROM node:20-bookworm-slim AS run
+FROM node:22-bookworm-slim AS run
 ENV NODE_ENV=production \
     MULTI_USER=1 \
     XDG_CONFIG_HOME=/data \
