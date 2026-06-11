@@ -123,7 +123,7 @@ async function createWindow() {
     height: 950,
     minWidth: 1000,
     minHeight: 700,
-    title: "Bugzilla AI Triage",
+    title: "Zilla Copilot",
     backgroundColor: "#0a0a0f", // matches dashboard's dark theme so there's no white flash
     webPreferences: {
       // Web content runs sandboxed; we don't expose Node APIs to renderer.

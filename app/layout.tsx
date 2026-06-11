@@ -4,7 +4,7 @@ import { ToastContainer } from "@/components/ui/Toast";
 import { ThemeManager } from "@/components/theme/ThemeManager";
 
 export const metadata: Metadata = {
-  title: "Bugzilla AI Triage Dashboard",
+  title: "Zilla Copilot",
   description: "AI-assisted bug triage workflow with human approval and Bugzilla integration via MCP.",
 };
 

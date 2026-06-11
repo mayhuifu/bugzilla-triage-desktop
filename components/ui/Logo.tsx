@@ -16,10 +16,10 @@ export function Logo({ subtitle }: { subtitle?: string }) {
       </div>
       <div className="leading-tight">
         <div className="text-sm font-semibold text-slate-100 flex items-center gap-1.5">
-          Bugzilla AI Triage
+          Zilla Copilot
           <span
             className="text-[10px] font-mono font-normal text-slate-500 bg-bg-hover/60 ring-1 ring-bg-border/50 px-1.5 py-px rounded"
-            title={`Bugzilla AI Triage v${APP_VERSION}`}
+            title={`Zilla Copilot v${APP_VERSION}`}
           >
             v{APP_VERSION}
           </span>
