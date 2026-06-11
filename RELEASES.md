@@ -12,15 +12,26 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
-## v0.7.0 — Multi-user server platform
+## v0.7.0 — Zilla Copilot: multi-user server platform + File a Ticket
 
-**Tagged:** (pending)
+**Tagged:** 2026-06-11
 
 ### Highlights
 
-The app can now be hosted on a company server and used by the whole team at
-once — while the **desktop build is byte-identical to v0.6.0** (every new code
-path is behind the `MULTI_USER=1` env flag).
+The app is now **Zilla Copilot**, can be hosted on a company server and used by
+the whole team at once (every server-mode code path is behind the
+`MULTI_USER=1` env flag — desktop behavior is unchanged), and tickets can be
+**filed** straight from the dashboard, not just triaged.
+
+- **New name** — the app identifies as *Zilla Copilot* (header, window/tab
+  title). Installer file names are unchanged.
+- **File a Ticket** — a new button beside *My Tickets* opens a create form:
+  product/component/version pulled live from Bugzilla, the install's mandatory
+  **Type** field (`cf_type`) prepopulated with *Change Request*, and
+  `op_sys`/`platform` auto-resolved from the install's legal values so users
+  never see "You must select/enter a OS". The bug is created with YOU as the
+  reporter and the app jumps to the new ticket's page. Verified live
+  (ticket #16572).
 
 - **Self-service onboarding at `/setup`** — each engineer signs in once with
   their work email + their own Bugzilla API key, and picks the company LLM
@@ -47,8 +58,9 @@ path is behind the `MULTI_USER=1` env flag).
 
 ### Desktop users
 
-Nothing changes. No new settings, no behavior differences; v0.7.0 installers
-are functionally identical to v0.6.0.
+Two visible changes: the new name and the **File a Ticket** button. Everything
+else (triage, spec search, settings) behaves exactly as v0.6.0 — the entire
+multi-user machinery is inert unless the server is started with `MULTI_USER=1`.
 
 ---
 
