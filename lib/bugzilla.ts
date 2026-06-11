@@ -23,6 +23,7 @@ import type {
 } from "./types";
 import { OPEN_STATUSES, CLOSED_STATUSES } from "./types";
 import { getEffectiveSettings } from "./settings";
+import { auditBugzillaWrite } from "./audit";
 
 // ── Configuration ─────────────────────────────────────────────────
 
@@ -514,6 +515,7 @@ export async function submit(opts: {
     is_markdown: false,
   }) as { id?: number };
   const commentId = commentRes.id;
+  auditBugzillaWrite("comment", id);
 
   // 2. Append the "Analyzed by AI Triage Bot" cf_label — AI flow only.
   //    (PUT /rest/bug/{id} with cf_label set replaces the value, so we
@@ -525,6 +527,7 @@ export async function submit(opts: {
     labels.add(ANALYSIS_LABEL);
     const mergedLabel = Array.from(labels).join("; ");
     await bzPut(`/rest/bug/${id}`, { cf_label: mergedLabel });
+    auditBugzillaWrite("label", id);
   }
 
   // 3. Transition if requested.
@@ -533,6 +536,7 @@ export async function submit(opts: {
     const payload: Record<string, string> = { status: transitionTo };
     if (transitionTo === "RESOLVED" && resolution) payload.resolution = resolution;
     await bzPut(`/rest/bug/${id}`, payload);
+    auditBugzillaWrite("status", id, transitionTo);
     newStatus = transitionTo;
   }
 
