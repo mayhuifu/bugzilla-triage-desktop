@@ -128,6 +128,7 @@ export const POST = withUser(async (req: Request) => {
       description,
       version: str("version") || undefined,
       severity: str("severity") || undefined,
+      type: str("type") || undefined,
     });
     return NextResponse.json({ id, source: "bugzilla" });
   } catch (err) {

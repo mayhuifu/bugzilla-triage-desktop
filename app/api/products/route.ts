@@ -10,17 +10,19 @@ export const GET = withUser(async (req: Request) => {
   const url = new URL(req.url);
   const explicitMock = url.searchParams.get("mock") === "1";
   const fresh = url.searchParams.get("fresh") === "1";
+  const MOCK_TYPE_OPTIONS = ["Change_Request", "Work_Package", "Action_Item", "Requirement", "Specification"];
   if (explicitMock) {
-    return NextResponse.json({ products: MOCK_PRODUCTS, source: "mock" });
+    return NextResponse.json({ products: MOCK_PRODUCTS, typeOptions: MOCK_TYPE_OPTIONS, source: "mock" });
   }
   try {
-    // Cached for the session — the product list is effectively static.
-    const { products } = await cached("products", CACHE_TTL.products, fresh, () => bridgeProducts());
-    return NextResponse.json({ products, source: "bugzilla-mcp" });
+    // Cached for the session — product list + type field are effectively static.
+    const { products, typeOptions } = await cached("products", CACHE_TTL.products, fresh, () => bridgeProducts());
+    return NextResponse.json({ products, typeOptions, source: "bugzilla-mcp" });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "unknown";
     return NextResponse.json({
       products: MOCK_PRODUCTS,
+      typeOptions: MOCK_TYPE_OPTIONS,
       source: "mock-fallback",
       error: msg,
     });

@@ -554,7 +554,26 @@ export async function submit(opts: {
 
 // ── products ──────────────────────────────────────────────────────
 
-export async function products(): Promise<{ products: ProductInfo[] }> {
+/** Legal values of this install's mandatory "Type" custom field (cf_type),
+ *  "---" excluded. Empty array when the install has no such field. Cached for
+ *  the process lifetime — field definitions are effectively static. */
+let _typeOptionsCache: string[] | null = null;
+export async function ticketTypeOptions(): Promise<string[]> {
+  if (_typeOptionsCache) return _typeOptionsCache;
+  try {
+    const data = await bzGet("/rest/field/bug/cf_type", []) as {
+      fields?: Array<{ values?: Array<{ name?: string }> }>;
+    };
+    _typeOptionsCache = (data.fields?.[0]?.values ?? [])
+      .map(v => v.name ?? "")
+      .filter(v => v && v !== "---");
+  } catch {
+    _typeOptionsCache = []; // install without cf_type — form hides the select
+  }
+  return _typeOptionsCache;
+}
+
+export async function products(): Promise<{ products: ProductInfo[]; typeOptions: string[] }> {
   const data = await bzGet("/rest/product", [
     ["type", "accessible"],
     ["include_fields", "name,is_active,components.name,components.is_active,versions.name,versions.is_active"],
@@ -577,18 +596,43 @@ export async function products(): Promise<{ products: ProductInfo[] }> {
     list.push({ name: p.name ?? "", components, versions });
   }
   list.sort((a, b) => a.name.localeCompare(b.name));
-  return { products: list };
+  return { products: list, typeOptions: await ticketTypeOptions() };
 }
 
 // ── whoami (with env-var fallback) ────────────────────────────────
 
 // ── create ticket ─────────────────────────────────────────────────
 //
-// POST /rest/bug. Bugzilla requires product / component / summary / version;
-// severity is sent with the same capitalized vocabulary this install uses in
-// search filters. Other fields (op_sys, platform, priority) are left to the
-// server's per-product defaults so we don't fight install-specific configs —
-// if an install makes one mandatory, Bugzilla's error is surfaced verbatim.
+// POST /rest/bug. Bugzilla requires product / component / summary / version,
+// and OUR install also makes op_sys + platform mandatory (code 50: "You must
+// select/enter a OS"). Those two are meaningless for modem bugs, so instead of
+// burdening the form we resolve sensible defaults from the install's own
+// legal-value lists (prefer "All", then "Other", then the first value) and
+// send them automatically. Any remaining install-specific rejection is
+// surfaced verbatim to the dialog.
+
+let _osPlatformDefaults: { opSys: string; platform: string } | null = null;
+
+async function resolveOsPlatformDefaults(): Promise<{ opSys: string; platform: string }> {
+  if (_osPlatformDefaults) return _osPlatformDefaults;
+  const legalValues = async (field: string): Promise<string[]> => {
+    try {
+      const data = await bzGet(`/rest/field/bug/${field}`, []) as {
+        fields?: Array<{ values?: Array<{ name?: string }> }>;
+      };
+      return (data.fields?.[0]?.values ?? []).map(v => v.name ?? "").filter(Boolean);
+    } catch {
+      return []; // fall through to the hardcoded preference below
+    }
+  };
+  const pick = (vals: string[]) =>
+    vals.find(v => v.toLowerCase() === "all") ||
+    vals.find(v => v.toLowerCase() === "other") ||
+    vals[0] || "All";
+  const [os, plat] = await Promise.all([legalValues("op_sys"), legalValues("rep_platform")]);
+  _osPlatformDefaults = { opSys: pick(os), platform: pick(plat) };
+  return _osPlatformDefaults;
+}
 
 export async function createTicket(opts: {
   product: string;
@@ -597,15 +641,26 @@ export async function createTicket(opts: {
   description: string;
   version?: string;
   severity?: string;
+  /** cf_type value (mandatory on our install — e.g. Change_Request). */
+  type?: string;
   assignedTo?: string;
 }): Promise<{ id: number }> {
+  const defaults = await resolveOsPlatformDefaults();
   const payload: Record<string, string> = {
     product: opts.product,
     component: opts.component,
     summary: opts.summary,
     description: opts.description,
     version: opts.version || "unspecified",
+    op_sys: defaults.opSys,
+    platform: defaults.platform,
   };
+  // Mandatory cf_type: the form sends an explicit choice; as a fallback (e.g.
+  // API callers) default to Change_Request — the dominant type in real
+  // tickets — or the first legal value.
+  const typeChoices = await ticketTypeOptions();
+  const cfType = opts.type || typeChoices.find(t => t === "Change_Request") || typeChoices[0];
+  if (cfType) payload.cf_type = cfType;
   if (opts.severity) payload.severity = opts.severity;
   if (opts.assignedTo) payload.assigned_to = opts.assignedTo;
 

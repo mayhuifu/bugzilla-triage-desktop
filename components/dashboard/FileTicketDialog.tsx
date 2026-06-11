@@ -16,11 +16,15 @@ export function FileTicketDialog({
   open,
   onClose,
   products,
+  typeOptions = [],
   defaultProduct = "",
 }: {
   open: boolean;
   onClose: () => void;
   products: ProductInfo[];
+  /** Legal values of the install's mandatory "Type" field (cf_type); empty
+   *  when the install has no such field (select is hidden, nothing sent). */
+  typeOptions?: string[];
   /** Pre-select the dashboard's current product filter when set. */
   defaultProduct?: string;
 }) {
@@ -28,6 +32,7 @@ export function FileTicketDialog({
   const [product, setProduct] = useState(defaultProduct);
   const [component, setComponent] = useState("");
   const [version, setVersion] = useState("");
+  const [type, setType] = useState("");
   const [severity, setSeverity] = useState("Normal");
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
@@ -44,6 +49,8 @@ export function FileTicketDialog({
       setProduct(p);
       setComponent("");
       setVersion(products.find(x => x.name === p)?.versions?.[0] || "");
+      // Change_Request is the dominant type in real tickets — sensible default.
+      setType(typeOptions.includes("Change_Request") ? "Change_Request" : typeOptions[0] || "");
       setSeverity("Normal");
       setSummary("");
       setDescription("");
@@ -75,6 +82,7 @@ export function FileTicketDialog({
           description: description.trim(),
           version: version || undefined,
           severity,
+          type: type || undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -161,6 +169,15 @@ export function FileTicketDialog({
               <option value="Minor">Minor</option>
             </select>
           </label>
+
+          {typeOptions.length > 0 && (
+            <label className="block text-xs text-slate-400 space-y-1">
+              <span>Type *</span>
+              <select className="input w-full" value={type} onChange={e => setType(e.target.value)}>
+                {typeOptions.map(t => <option key={t} value={t}>{t.replace(/_/g, " ")}</option>)}
+              </select>
+            </label>
+          )}
         </div>
 
         <label className="block text-xs text-slate-400 space-y-1">

@@ -46,6 +46,8 @@ export default function Dashboard() {
 
   // "File a Ticket" modal (button next to My Tickets).
   const [fileTicketOpen, setFileTicketOpen] = useState(false);
+  // Legal values of the install's mandatory "Type" field (from /api/products).
+  const [typeOptions, setTypeOptions] = useState<string[]>([]);
 
   // Bulk-triage selection — kept as a Set for O(1) membership checks while
   // rendering the table. Cleared when the user navigates to /bulk-triage.
@@ -145,6 +147,7 @@ export default function Dashboard() {
         if (cancelled) return;
         const list: ProductInfo[] = p.products || [];
         setProducts(list);
+        setTypeOptions(p.typeOptions || []);
         if (list.some(prod => prod.name === DEFAULT_PRODUCT)) {
           setFilters(f => f.product ? f : { ...f, product: DEFAULT_PRODUCT });
         }
@@ -723,6 +726,7 @@ export default function Dashboard() {
         open={fileTicketOpen}
         onClose={() => setFileTicketOpen(false)}
         products={products}
+        typeOptions={typeOptions}
         defaultProduct={filters.product || DEFAULT_PRODUCT}
       />
     </div>
