@@ -35,11 +35,15 @@ export function FileTicketDialog({
   const [error, setError] = useState<string | null>(null);
 
   // Re-seed the form each time the dialog opens (fresh ticket, current filter).
+  // Version defaults to the product's FIRST real version — not "unspecified",
+  // which many installs (incl. ours: U300 has only A0/B0) don't define and
+  // Bugzilla would reject.
   useEffect(() => {
     if (open) {
-      setProduct(defaultProduct || products[0]?.name || "");
+      const p = defaultProduct || products[0]?.name || "";
+      setProduct(p);
       setComponent("");
-      setVersion("");
+      setVersion(products.find(x => x.name === p)?.versions?.[0] || "");
       setSeverity("Normal");
       setSummary("");
       setDescription("");
@@ -109,7 +113,11 @@ export function FileTicketDialog({
             <select
               className="input w-full"
               value={product}
-              onChange={e => { setProduct(e.target.value); setComponent(""); setVersion(""); }}
+              onChange={e => {
+                setProduct(e.target.value);
+                setComponent("");
+                setVersion(products.find(x => x.name === e.target.value)?.versions?.[0] || "");
+              }}
             >
               <option value="" disabled>Select product…</option>
               {products.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
@@ -136,9 +144,9 @@ export function FileTicketDialog({
               value={version}
               onChange={e => setVersion(e.target.value)}
               disabled={!versionOptions.length}
-              title={versionOptions.length ? undefined : 'No versions listed — Bugzilla default "unspecified" is used'}
+              title={versionOptions.length ? undefined : 'No versions listed for this product — "unspecified" is sent'}
             >
-              <option value="">{versionOptions.length ? "Default (unspecified)" : "unspecified"}</option>
+              {!versionOptions.length && <option value="">unspecified</option>}
               {versionOptions.map(v => <option key={v} value={v}>{v}</option>)}
             </select>
           </label>
