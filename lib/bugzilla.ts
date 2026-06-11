@@ -557,8 +557,8 @@ export async function submit(opts: {
 export async function products(): Promise<{ products: ProductInfo[] }> {
   const data = await bzGet("/rest/product", [
     ["type", "accessible"],
-    ["include_fields", "name,is_active,components.name,components.is_active"],
-  ]) as { products?: Array<{ name?: string; is_active?: boolean; components?: Array<{ name?: string; is_active?: boolean }> }> };
+    ["include_fields", "name,is_active,components.name,components.is_active,versions.name,versions.is_active"],
+  ]) as { products?: Array<{ name?: string; is_active?: boolean; components?: Array<{ name?: string; is_active?: boolean }>; versions?: Array<{ name?: string; is_active?: boolean }> }> };
 
   const list: ProductInfo[] = [];
   for (const p of data.products ?? []) {
@@ -568,13 +568,52 @@ export async function products(): Promise<{ products: ProductInfo[] }> {
       .map(c => c.name ?? "")
       .filter(Boolean)
       .sort();
-    list.push({ name: p.name ?? "", components });
+    // Versions keep Bugzilla's own order (it's meaningful — newest last or
+    // per-install convention); needed by the File-a-Ticket form.
+    const versions = (p.versions ?? [])
+      .filter(v => v.is_active !== false)
+      .map(v => v.name ?? "")
+      .filter(Boolean);
+    list.push({ name: p.name ?? "", components, versions });
   }
   list.sort((a, b) => a.name.localeCompare(b.name));
   return { products: list };
 }
 
 // ── whoami (with env-var fallback) ────────────────────────────────
+
+// ── create ticket ─────────────────────────────────────────────────
+//
+// POST /rest/bug. Bugzilla requires product / component / summary / version;
+// severity is sent with the same capitalized vocabulary this install uses in
+// search filters. Other fields (op_sys, platform, priority) are left to the
+// server's per-product defaults so we don't fight install-specific configs —
+// if an install makes one mandatory, Bugzilla's error is surfaced verbatim.
+
+export async function createTicket(opts: {
+  product: string;
+  component: string;
+  summary: string;
+  description: string;
+  version?: string;
+  severity?: string;
+  assignedTo?: string;
+}): Promise<{ id: number }> {
+  const payload: Record<string, string> = {
+    product: opts.product,
+    component: opts.component,
+    summary: opts.summary,
+    description: opts.description,
+    version: opts.version || "unspecified",
+  };
+  if (opts.severity) payload.severity = opts.severity;
+  if (opts.assignedTo) payload.assigned_to = opts.assignedTo;
+
+  const res = await bzPost("/rest/bug", payload) as { id?: number };
+  if (!res.id) throw new Error("Bugzilla accepted the request but returned no bug id");
+  auditBugzillaWrite("create", res.id, opts.product);
+  return { id: res.id };
+}
 
 export async function whoami(): Promise<WhoAmI> {
   const cfg = readConfig();

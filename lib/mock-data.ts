@@ -207,7 +207,7 @@ export const MOCK_PRODUCTS: ProductInfo[] = (() => {
     grouped.get(t.product)!.add(t.component);
   }
   return Array.from(grouped.entries())
-    .map(([name, comps]) => ({ name, components: Array.from(comps).sort() }))
+    .map(([name, comps]) => ({ name, components: Array.from(comps).sort(), versions: ["unspecified"] }))
     .sort((a, b) => a.name.localeCompare(b.name));
 })();
 

@@ -15,6 +15,7 @@ import { ProductStatus, TrendBar } from "@/components/dashboard/ProductStatus";
 import { TicketFilters, type FilterState } from "@/components/dashboard/TicketFilters";
 import { TicketTable } from "@/components/dashboard/TicketTable";
 import { SavedFilters } from "@/components/dashboard/SavedFilters";
+import { FileTicketDialog } from "@/components/dashboard/FileTicketDialog";
 import {
   getCachedStats, setCachedStats, getCachedTickets, setCachedTickets,
 } from "@/lib/dashboard-cache";
@@ -42,6 +43,9 @@ export default function Dashboard() {
   const [source, setSource] = useState<string>("loading");
 
   const [filters, setFilters] = useState<FilterState>(INITIAL_FILTERS);
+
+  // "File a Ticket" modal (button next to My Tickets).
+  const [fileTicketOpen, setFileTicketOpen] = useState(false);
 
   // Bulk-triage selection — kept as a Set for O(1) membership checks while
   // rendering the table. Cleared when the user navigates to /bulk-triage.
@@ -642,6 +646,7 @@ export default function Dashboard() {
               assigneeOptions={assigneesFromLoaded}
               whoami={whoami}
               bucketActive={bucket !== null}
+              onFileTicket={() => setFileTicketOpen(true)}
             />
           </div>
           <SavedFilters
@@ -713,6 +718,13 @@ export default function Dashboard() {
           <span className="text-emerald-400"> Submit to Bugzilla via MCP</span>
         </div>
       </main>
+
+      <FileTicketDialog
+        open={fileTicketOpen}
+        onClose={() => setFileTicketOpen(false)}
+        products={products}
+        defaultProduct={filters.product || DEFAULT_PRODUCT}
+      />
     </div>
   );
 }

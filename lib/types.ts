@@ -233,6 +233,10 @@ export const BUCKET_LABELS: Record<TicketBucket, string> = {
 export interface ProductInfo {
   name: string;
   components: string[];
+  /** Active version values for this product — needed when FILING a ticket
+   *  (Bugzilla's POST /rest/bug requires `version`). The create form falls
+   *  back to "unspecified" when empty. */
+  versions: string[];
 }
 
 export interface WhoAmI {

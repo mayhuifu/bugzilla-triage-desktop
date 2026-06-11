@@ -1,6 +1,6 @@
 "use client";
 
-import { Search, Filter, User } from "lucide-react";
+import { Search, Filter, User, FilePlus2 } from "lucide-react";
 import type { ProductInfo, WhoAmI } from "@/lib/types";
 import { AssigneeFilter } from "./AssigneeFilter";
 
@@ -22,6 +22,7 @@ export function TicketFilters({
   assigneeOptions,
   whoami,
   bucketActive = false,
+  onFileTicket,
 }: {
   state: FilterState;
   onChange: (s: FilterState) => void;
@@ -40,6 +41,8 @@ export function TicketFilters({
   // these dropdowns server-side. We disable them visually so the user
   // doesn't think they can stack.
   bucketActive?: boolean;
+  /** Opens the File-a-Ticket dialog (button next to My Tickets). */
+  onFileTicket?: () => void;
 }) {
   // Component options come from the selected product when available — that
   // way picking a product narrows the list to its real components rather
@@ -149,6 +152,17 @@ export function TicketFilters({
         <User className="w-3.5 h-3.5" />
         My Tickets
       </button>
+
+      {onFileTicket && (
+        <button
+          onClick={onFileTicket}
+          title="File a new ticket in Bugzilla — you'll be the reporter"
+          className="input w-auto flex items-center gap-1.5 text-xs text-accent-glow ring-1 ring-accent/40 hover:bg-accent/10"
+        >
+          <FilePlus2 className="w-3.5 h-3.5" />
+          File a Ticket
+        </button>
+      )}
     </div>
   );
 }
