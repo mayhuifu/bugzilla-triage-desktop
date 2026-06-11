@@ -1,0 +1,12 @@
+# Replace the hostname with the DNS name IT assigns to this VM.
+#
+# TLS options (pick one):
+#   tls internal                        → Caddy mints its own CA. Browsers show
+#                                         a one-time warning — fine for the
+#                                         deployment TEST.
+#   tls /certs/cert.pem /certs/key.pem  → company-issued cert dropped into
+#                                         deploy/certs/ (production).
+triage.internal.example.com {
+	tls internal
+	reverse_proxy app:3000
+}

@@ -1,0 +1,31 @@
+# Multi-user Bugzilla AI Triage — app + HTTPS reverse proxy.
+# HTTPS is REQUIRED off-localhost: the session cookie is Secure and browsers
+# drop it over plain http on a LAN address (logins silently fail).
+#
+#   cp .env.example .env   # fill in APP_SECRET, BUGZILLA_URL, COMPANY_LLM_*
+#   edit Caddyfile          # set the real hostname (+ company cert if any)
+#   docker compose up -d --build
+services:
+  app:
+    build: ..
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - btdata:/data
+    expose:
+      - "3000"
+  proxy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/certs:ro          # drop company cert/key here (optional)
+      - caddy_data:/data
+      - caddy_config:/config
+volumes:
+  btdata:
+  caddy_data:
+  caddy_config:
