@@ -20,6 +20,10 @@ COPY . .
 # context — the test keeps an already-staged model from re-downloading.
 RUN test -f models/Xenova/bge-small-en-v1.5/config.json || npm run fetch:model
 RUN npm run build
+# Stage the sqlite-vec platform package (name preserved, arch-agnostic): the
+# runtime loads <cwd>/node_modules/sqlite-vec-linux-<arch>/vec0.so via a
+# dynamic require the standalone tracer can't see.
+RUN mkdir -p /vecpkg && cp -r node_modules/sqlite-vec-linux-* /vecpkg/
 
 FROM node:20-bookworm-slim AS run
 ENV NODE_ENV=production \
@@ -33,13 +37,12 @@ WORKDIR /app
 # onnxruntime-node, @huggingface/transformers, pdfjs-dist)
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
-COPY --from=build /app/public ./public
+# (no public/ dir in this repo — assets are served from .next/static)
 # Embedder model — resolved from <cwd>/models at runtime (embedder-bge.ts)
 COPY --from=build /app/models ./models
-# sqlite-vec ships per-platform packages loaded via a dynamic require from
-# <cwd>/node_modules (store.ts) — invisible to the standalone tracer, so copy
-# explicitly. npm ci in the build stage installed the one matching this arch.
-COPY --from=build /app/node_modules/sqlite-vec-linux-x64 ./node_modules/sqlite-vec-linux-x64
+# sqlite-vec platform package staged by the build stage (dir name preserved —
+# matches the build arch: sqlite-vec-linux-x64 on x64 hosts, -arm64 on ARM)
+COPY --from=build /vecpkg ./node_modules/
 RUN mkdir -p /data && chown -R node:node /data /app
 USER node
 VOLUME /data

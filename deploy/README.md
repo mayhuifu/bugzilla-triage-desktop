@@ -90,7 +90,7 @@ Everything stateful lives in the **`btdata` volume**, mounted at `/data`:
 |---|---|
 | Login/setup succeeds but you're bounced back to `/setup`; APIs 401 | The session cookie was dropped → you're not on HTTPS (or you're on a bare IP with `http://`). Use the `https://<dns-name>/` URL through the proxy. |
 | `/setup` says "Bugzilla key check failed: …" | The VM can't reach `BUGZILLA_URL` (route/VPN/firewall), or the key is wrong, or set `BUGZILLA_INSECURE=true` for self-signed certs. |
-| Spec search works but logs say `sqlite-vec not loaded … BM25-only` | `vec0.so` missing in the image — check item 8 above; the Dockerfile's `sqlite-vec-linux-x64` COPY assumes an x64 build host. |
+| Spec search works but logs say `sqlite-vec not loaded … BM25-only` | `vec0.so` missing in the image — check item 8 above (the dir is `sqlite-vec-linux-x64` on x64 hosts, `-arm64` on ARM; the image arch follows the build host). |
 | Spec search has no semantic matches / embedder errors | `models/` wasn't staged at build (offline host) — see the offline-build note. |
 | HTTP 429 on triage | Per-user rate limit — raise `RATE_TRIAGE_PER_MIN` in `.env` and `docker compose up -d`. |
 | Browser warns about the certificate | `tls internal` test mode — accept once, or install company certs (`deploy/certs/` + Caddyfile `tls /certs/cert.pem /certs/key.pem`). |
