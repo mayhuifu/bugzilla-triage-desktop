@@ -12,6 +12,31 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.1 — "My Tickets" = your involved tickets, role-selectable
+
+**Tagged:** 2026-06-11
+
+### Highlights
+
+**My Tickets** used to match only bugs *assigned to* you — for a real user that
+was 1 ticket versus the ~90 they're actually involved with. It now covers every
+role you choose:
+
+- **Selectable roles.** Turning on **My Tickets** reveals three chips —
+  **Assignee · Reporter · CC** — to pick which roles count as "yours".
+  Defaults to **Assignee only** (unchanged from long-standing behavior); your
+  selection persists across sessions. (Under the hood: Bugzilla's email-role
+  OR search — `emailassigned_to1/reporter1/cc1`.)
+- **Top statistics scope to your selection.** The Open/Closed/Blocker/Critical
+  cards and the 7-day trend now reflect the *same* My-Tickets role selection as
+  the list below, so the whole top of the page is "your work" when the filter
+  is on.
+
+Both desktop and server (in server mode each session resolves to its own user).
+No other behavior changes.
+
+---
+
 ## v0.7.0 — Zilla Copilot: multi-user server platform + File a Ticket
 
 **Tagged:** 2026-06-11
