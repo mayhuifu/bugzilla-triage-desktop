@@ -329,6 +329,8 @@ const SUMMARY_FIELDS =
 
 // ── search ────────────────────────────────────────────────────────
 
+export type InvolveRole = "assignee" | "reporter" | "cc";
+
 export interface SearchOpts {
   product?: string;
   component?: string;
@@ -336,10 +338,13 @@ export interface SearchOpts {
   severity?: string | string[];
   assignee?: string;
   cc?: string;
-  /** "My Tickets": match bugs where this login is the assignee OR reporter
-   *  OR on the CC list (Bugzilla email-role OR search). Takes precedence
-   *  over `assignee`. */
+  /** "My Tickets": match bugs where this login is involved. Which roles count
+   *  is set by `involveRoles` (default ["assignee"]). Takes precedence over
+   *  `assignee`. */
   involves?: string;
+  /** Roles the `involves` login must hold — any subset of assignee/reporter/cc,
+   *  OR-combined. Empty/undefined → assignee only. */
+  involveRoles?: InvolveRole[];
   quicksearch?: string;
   createdSince?: string;     // YYYY-MM-DD lower bound on creation_time
   changedSince?: string;     // YYYY-MM-DD lower bound on last_change_time
@@ -347,19 +352,22 @@ export interface SearchOpts {
   offset?: number;
 }
 
-/** Bugzilla "email" search shortcut: bugs where `login` is the assignee OR
- *  reporter OR on the CC list. This is what "My Tickets" means — every ticket
- *  the user is involved with, not just the ones assigned to them. Bugzilla ORs
- *  the selected role flags for a single email1 value (verified on the live
- *  install: assignee-only=1 vs involves=91 for a real user). */
-function involvesParams(login: string): Array<readonly [string, string]> {
-  return [
+/** Bugzilla "email" search shortcut: bugs where `login` holds one of the
+ *  selected roles (assignee / reporter / cc), OR-combined. This is what
+ *  "My Tickets" means — Bugzilla ORs every emailXXX1=1 flag that shares the
+ *  single email1 value. Defaults to assignee-only when no roles are given.
+ *  (Verified on the live install: assignee-only=1 vs all-three=91 for a real
+ *  user.) */
+function involvesParams(login: string, roles?: InvolveRole[]): Array<readonly [string, string]> {
+  const set = new Set<InvolveRole>(roles && roles.length ? roles : ["assignee"]);
+  const params: Array<readonly [string, string]> = [
     ["email1", login],
     ["emailtype1", "equals"],
-    ["emailassigned_to1", "1"],
-    ["emailreporter1", "1"],
-    ["emailcc1", "1"],
   ];
+  if (set.has("assignee")) params.push(["emailassigned_to1", "1"]);
+  if (set.has("reporter")) params.push(["emailreporter1", "1"]);
+  if (set.has("cc")) params.push(["emailcc1", "1"]);
+  return params;
 }
 
 export async function search(opts: SearchOpts): Promise<{ tickets: TicketSummary[]; total: number }> {
@@ -374,7 +382,7 @@ export async function search(opts: SearchOpts): Promise<{ tickets: TicketSummary
   ];
   if (opts.product) params.push(["product", opts.product]);
   if (opts.component) params.push(["component", opts.component]);
-  if (opts.involves) params.push(...involvesParams(opts.involves));
+  if (opts.involves) params.push(...involvesParams(opts.involves, opts.involveRoles));
   else if (opts.assignee) params.push(["assigned_to", opts.assignee]);
   if (opts.cc) params.push(["cc", opts.cc]);
   if (opts.quicksearch) params.push(["quicksearch", opts.quicksearch]);
@@ -769,7 +777,7 @@ export async function findUsers(match: string, limit = 20): Promise<{ users: Bug
 export type StatsPart = "core" | "trend" | "all";
 
 export async function stats(
-  opts: { product?: string; component?: string; assignee?: string; involves?: string },
+  opts: { product?: string; component?: string; assignee?: string; involves?: string; involveRoles?: InvolveRole[] },
   part: StatsPart = "all",
 ): Promise<Partial<DashboardStats> & { scope: DashboardStats["scope"]; generatedAt: string }> {
   const today = new Date();
@@ -783,7 +791,7 @@ export async function stats(
   const base: Array<readonly [string, string]> = [];
   if (opts.product) base.push(["product", opts.product]);
   if (opts.component) base.push(["component", opts.component]);
-  if (opts.involves) base.push(...involvesParams(opts.involves));
+  if (opts.involves) base.push(...involvesParams(opts.involves, opts.involveRoles));
   else if (opts.assignee) base.push(["assigned_to", opts.assignee]);
 
   const openStatusPairs: Array<readonly [string, string]> = OPEN_STATUSES.map(s => ["status", s] as const);

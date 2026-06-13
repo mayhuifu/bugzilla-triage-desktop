@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { bridgeStats } from "@/lib/bridge";
 import { buildMockStats } from "@/lib/mock-data";
 import { cached, CACHE_TTL } from "@/lib/server-cache";
-import type { StatsPart } from "@/lib/bugzilla";
+import type { StatsPart, InvolveRole } from "@/lib/bugzilla";
 import type { DashboardStats } from "@/lib/types";
 import { withUser } from "@/lib/users/with-user";
 
@@ -30,9 +30,11 @@ export const GET = withUser(async (req: Request) => {
   const product = url.searchParams.get("product") || undefined;
   const component = url.searchParams.get("component") || undefined;
   const assignee = url.searchParams.get("assignee") || undefined;
-  // "My Tickets" → counts over bugs the user is involved with (assignee OR
-  // reporter OR CC), so the cards match the filtered ticket list.
+  // "My Tickets" → counts over bugs the user is involved with, scoped to the
+  // same roles the list uses (`roles` = subset of assignee/reporter/cc), so the
+  // top cards match the filtered list. Default assignee-only when absent.
   const involves = url.searchParams.get("involves") || undefined;
+  const involveRoles = (url.searchParams.get("roles") || "").split(",").map(s => s.trim()).filter(Boolean) as InvolveRole[];
   const explicitMock = url.searchParams.get("mock") === "1";
   const fresh = url.searchParams.get("fresh") === "1";
   // The dashboard requests "core" (6 card queries) and "trend" (8 bar
@@ -43,7 +45,7 @@ export const GET = withUser(async (req: Request) => {
 
   if (explicitMock) {
     return NextResponse.json({
-      ...pickPart(buildMockStats({ product, component, assignee, involves }), part),
+      ...pickPart(buildMockStats({ product, component, assignee, involves, involveRoles }), part),
       source: "mock",
     });
   }
@@ -53,13 +55,13 @@ export const GET = withUser(async (req: Request) => {
     // expensive calls. Toggling filters back to a recently-viewed scope, or
     // re-landing on the dashboard, is then instant instead of re-firing the
     // count-queries. Refresh (fresh=1) forces a recount.
-    const key = `stats:${part}:${product ?? ""}|${component ?? ""}|${assignee ?? ""}|${involves ?? ""}`;
-    const stats = await cached(key, CACHE_TTL.stats, fresh, () => bridgeStats({ product, component, assignee, involves }, part));
+    const key = `stats:${part}:${product ?? ""}|${component ?? ""}|${assignee ?? ""}|${involves ?? ""}|${involveRoles.join("+")}`;
+    const stats = await cached(key, CACHE_TTL.stats, fresh, () => bridgeStats({ product, component, assignee, involves, involveRoles }, part));
     return NextResponse.json({ ...stats, source: "bugzilla-mcp" });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "unknown";
     return NextResponse.json({
-      ...pickPart(buildMockStats({ product, component, assignee }), part),
+      ...pickPart(buildMockStats({ product, component, assignee, involves, involveRoles }), part),
       source: "mock-fallback",
       error: msg,
     });

@@ -3,6 +3,7 @@ import { bridgeSearch, bridgeCreate } from "@/lib/bridge";
 import { mockSearch } from "@/lib/mock-data";
 import { OPEN_STATUSES, CLOSED_STATUSES, type TicketBucket } from "@/lib/types";
 import { withUser } from "@/lib/users/with-user";
+import type { InvolveRole } from "@/lib/bugzilla";
 
 export const dynamic = "force-dynamic";
 
@@ -48,8 +49,10 @@ export const GET = withUser(async (req: Request) => {
   const product = sp.get("product") || undefined;
   const component = sp.get("component") || undefined;
   const assignee = sp.get("assignee") || undefined;
-  // "My Tickets" → bugs the user is involved with (assignee OR reporter OR CC).
+  // "My Tickets" → bugs the user is involved with; `roles` chooses which of
+  // assignee/reporter/cc count (default assignee-only when absent).
   const involves = sp.get("involves") || undefined;
+  const involveRoles = (sp.get("roles") || "").split(",").map(s => s.trim()).filter(Boolean) as InvolveRole[];
   const search = sp.get("q") || undefined;
   const limit = parseInt(sp.get("limit") || "25");
   const explicitMock = sp.get("mock") === "1";
@@ -64,7 +67,7 @@ export const GET = withUser(async (req: Request) => {
 
   if (explicitMock) {
     const { tickets, total } = mockSearch({
-      product, component, status, severity, assignee, involves, q: search, limit,
+      product, component, status, severity, assignee, involves, involveRoles, q: search, limit,
       createdSince, changedSince,
     });
     return NextResponse.json({ tickets, total, source: "mock" });
@@ -72,7 +75,7 @@ export const GET = withUser(async (req: Request) => {
 
   try {
     const { tickets, total } = await bridgeSearch({
-      product, component, status, severity, assignee, involves,
+      product, component, status, severity, assignee, involves, involveRoles,
       quicksearch: search, limit, createdSince, changedSince,
     });
     return NextResponse.json({ tickets, total, source: "bugzilla-mcp" });

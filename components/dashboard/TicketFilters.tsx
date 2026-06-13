@@ -4,6 +4,13 @@ import { Search, Filter, User, FilePlus2 } from "lucide-react";
 import type { ProductInfo, WhoAmI } from "@/lib/types";
 import { AssigneeFilter } from "./AssigneeFilter";
 
+/** Which roles "My Tickets" counts as "mine". Default: assignee only. */
+export interface MyRoles {
+  assignee: boolean;
+  reporter: boolean;
+  cc: boolean;
+}
+
 export interface FilterState {
   q: string;
   product: string;     // "" = all products
@@ -12,7 +19,14 @@ export interface FilterState {
   severity: string;
   status: string;
   myTickets: boolean;
+  myRoles: MyRoles;
 }
+
+const ROLE_OPTIONS: { key: keyof MyRoles; label: string }[] = [
+  { key: "assignee", label: "Assignee" },
+  { key: "reporter", label: "Reporter" },
+  { key: "cc", label: "CC" },
+];
 
 export function TicketFilters({
   state,
@@ -152,6 +166,34 @@ export function TicketFilters({
         <User className="w-3.5 h-3.5" />
         My Tickets
       </button>
+
+      {state.myTickets && (
+        <div className="flex items-center gap-1 text-[11px] text-slate-400" title="Which roles count as 'mine'">
+          <span className="text-slate-500">as</span>
+          {ROLE_OPTIONS.map(({ key, label }) => {
+            const on = state.myRoles[key];
+            return (
+              <button
+                key={key}
+                onClick={() => {
+                  const next = { ...state.myRoles, [key]: !on };
+                  // Never leave all roles off — fall back to assignee.
+                  if (!next.assignee && !next.reporter && !next.cc) next.assignee = true;
+                  onChange({ ...state, myRoles: next });
+                }}
+                title={`Include tickets where you are the ${label.toLowerCase()}`}
+                className={`px-2 py-1 rounded ring-1 transition-colors ${
+                  on
+                    ? "ring-accent/50 bg-accent/10 text-accent-glow"
+                    : "ring-bg-border/50 text-slate-500 hover:text-slate-300"
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {onFileTicket && (
         <button

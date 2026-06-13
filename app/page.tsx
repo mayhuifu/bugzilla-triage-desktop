@@ -26,7 +26,10 @@ const PAGE_INCREMENT = 25;     // each "Load more" click
 
 const INITIAL_FILTERS: FilterState = {
   q: "", product: "", component: "", assignee: "", severity: "", status: "", myTickets: false,
+  myRoles: { assignee: true, reporter: false, cc: false },
 };
+
+const MY_ROLES_KEY = "zilla-my-roles";
 
 export default function Dashboard() {
   const router = useRouter();
@@ -48,6 +51,21 @@ export default function Dashboard() {
   const [fileTicketOpen, setFileTicketOpen] = useState(false);
   // Legal values of the install's mandatory "Type" field (from /api/products).
   const [typeOptions, setTypeOptions] = useState<string[]>([]);
+
+  // Persist the My-Tickets role selection (assignee/reporter/cc) across sessions.
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(MY_ROLES_KEY);
+      if (!saved) return;
+      const p = JSON.parse(saved) as Partial<FilterState["myRoles"]>;
+      const roles = { assignee: !!p.assignee, reporter: !!p.reporter, cc: !!p.cc };
+      if (!roles.assignee && !roles.reporter && !roles.cc) roles.assignee = true;
+      setFilters(f => ({ ...f, myRoles: roles }));
+    } catch { /* ignore malformed prefs */ }
+  }, []);
+  useEffect(() => {
+    try { localStorage.setItem(MY_ROLES_KEY, JSON.stringify(filters.myRoles)); } catch { /* ignore */ }
+  }, [filters.myRoles]);
 
   // Bulk-triage selection — kept as a Set for O(1) membership checks while
   // rendering the table. Cleared when the user navigates to /bulk-triage.
@@ -107,6 +125,8 @@ export default function Dashboard() {
     // belt-and-suspenders so a stale value can't sneak through.
     if (filters.myTickets && whoami?.login) {
       qs.set("involves", whoami.login);
+      const roles = (["assignee", "reporter", "cc"] as const).filter(r => filters.myRoles[r]);
+      qs.set("roles", (roles.length ? roles : ["assignee"]).join(","));
     } else if (filters.assignee) {
       qs.set("assignee", filters.assignee);
     }
@@ -120,7 +140,8 @@ export default function Dashboard() {
     return qs.toString();
   }, [
     filters.product, filters.component, filters.assignee,
-    filters.myTickets, whoami?.login,
+    filters.myTickets, filters.myRoles.assignee, filters.myRoles.reporter, filters.myRoles.cc,
+    whoami?.login,
     bucket, filters.severity, filters.status, debouncedQ,
   ]);
 
