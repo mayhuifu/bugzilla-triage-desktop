@@ -101,11 +101,12 @@ export default function Dashboard() {
     const qs = new URLSearchParams();
     if (filters.product) qs.set("product", filters.product);
     if (filters.component) qs.set("component", filters.component);
-    // Assignee param precedence: My Tickets > explicit assignee dropdown.
-    // The dropdown is also disabled in the UI when myTickets is on, but
+    // "My Tickets" = every ticket the user is involved with (assignee OR
+    // reporter OR CC) via the `involves` param — not just assignee. Takes
+    // precedence over the explicit assignee dropdown (also disabled in UI), but
     // belt-and-suspenders so a stale value can't sneak through.
     if (filters.myTickets && whoami?.login) {
-      qs.set("assignee", whoami.login);
+      qs.set("involves", whoami.login);
     } else if (filters.assignee) {
       qs.set("assignee", filters.assignee);
     }

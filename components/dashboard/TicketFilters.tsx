@@ -142,7 +142,7 @@ export function TicketFilters({
       <button
         onClick={() => onChange({ ...state, myTickets: !state.myTickets })}
         disabled={!whoami?.login}
-        title={whoami?.login ? `Filter to tickets assigned to ${whoami.login}` : "Sign-in not detected"}
+        title={whoami?.login ? `Tickets you filed, are assigned, or are CC'd on (${whoami.login})` : "Sign-in not detected"}
         className={`input w-auto flex items-center gap-1.5 text-xs disabled:opacity-50 ${
           state.myTickets
             ? "ring-2 ring-accent text-accent-glow"

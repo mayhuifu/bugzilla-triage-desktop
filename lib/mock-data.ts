@@ -169,7 +169,7 @@ const CLOSED_SET = new Set<TicketStatus>(["RESOLVED", "VERIFIED", "CLOSED"]);
 export function mockSearch(opts: {
   product?: string; component?: string;
   status?: string | string[]; severity?: string | string[];
-  assignee?: string; q?: string; limit?: number;
+  assignee?: string; involves?: string; q?: string; limit?: number;
   createdSince?: string; changedSince?: string;  // YYYY-MM-DD lower bounds
 }): { tickets: TicketSummary[]; total: number } {
   const statusSet = new Set(Array.isArray(opts.status) ? opts.status : opts.status ? [opts.status] : []);
@@ -182,6 +182,7 @@ export function mockSearch(opts: {
     (!opts.product || t.product === opts.product) &&
     (!opts.component || t.component === opts.component) &&
     (!opts.assignee || t.assignee === opts.assignee) &&
+    (!opts.involves || t.assignee === opts.involves || t.reporter === opts.involves) &&
     (statusSet.size === 0 || statusSet.has(t.status)) &&
     (sevSet.size === 0 || sevSet.has(t.severity)) &&
     (!createdAfter || new Date(t.creationTime).getTime() >= createdAfter) &&
@@ -219,12 +220,13 @@ export const MOCK_WHOAMI: WhoAmI = {
 };
 
 export function buildMockStats(opts: {
-  product?: string; component?: string; assignee?: string;
+  product?: string; component?: string; assignee?: string; involves?: string;
 }): DashboardStats {
   const scoped = MOCK_SUMMARIES.filter(t =>
     (!opts.product || t.product === opts.product) &&
     (!opts.component || t.component === opts.component) &&
-    (!opts.assignee || t.assignee === opts.assignee),
+    (!opts.assignee || t.assignee === opts.assignee) &&
+    (!opts.involves || t.assignee === opts.involves || t.reporter === opts.involves),
   );
   const open = scoped.filter(t => !CLOSED_SET.has(t.status));
   const closed = scoped.filter(t => CLOSED_SET.has(t.status));
