@@ -23,6 +23,10 @@ interface Turn {
 
 type PropState = "pending" | "approving" | "done" | "error" | "dismissed";
 
+const ASK_WIDTH_KEY = "zilla-ask-width";
+const MIN_W = 360;
+const maxW = () => (typeof window !== "undefined" ? Math.min(window.innerWidth * 0.95, 1000) : 1000);
+
 export function AskZillaPanel({
   open, onClose, onTickets, context, seed,
 }: {
@@ -38,7 +42,31 @@ export function AskZillaPanel({
   const [error, setError] = useState<string | null>(null);
   const [propStatus, setPropStatus] = useState<Record<string, PropState>>({});
   const [propResult, setPropResult] = useState<Record<string, string>>({});
+  const [width, setWidth] = useState(460);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Restore the user's chosen panel width.
+  useEffect(() => {
+    try {
+      const w = Number(localStorage.getItem(ASK_WIDTH_KEY));
+      if (w >= MIN_W) setWidth(Math.min(w, maxW()));
+    } catch { /* private mode */ }
+  }, []);
+
+  function startResize(e: React.MouseEvent) {
+    e.preventDefault();
+    const onMove = (ev: MouseEvent) =>
+      setWidth(Math.max(MIN_W, Math.min(window.innerWidth - ev.clientX, maxW())));
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+      setWidth(w => { try { localStorage.setItem(ASK_WIDTH_KEY, String(Math.round(w))); } catch { /* */ } return w; });
+    };
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
 
   // Seed the input from the dashboard search box the first time the panel opens.
   useEffect(() => { if (open && seed && turns.length === 0) setInput(seed); }, [open, seed, turns.length]);
@@ -110,7 +138,13 @@ export function AskZillaPanel({
     k === "file_ticket" ? <GitPullRequestArrow className="w-3.5 h-3.5" /> : <FileText className="w-3.5 h-3.5" />;
 
   return (
-    <div className="fixed top-0 right-0 h-full w-[min(460px,100vw)] z-40 bg-bg-panel/97 backdrop-blur-sm border-l border-bg-border shadow-2xl flex flex-col animate-fade-in">
+    <div style={{ width }} className="fixed top-0 right-0 h-full max-w-full z-40 bg-bg-panel/97 backdrop-blur-sm border-l border-bg-border shadow-2xl flex flex-col animate-fade-in">
+      {/* Drag handle — resize the panel by its left edge. */}
+      <div
+        onMouseDown={startResize}
+        title="Drag to resize"
+        className="absolute left-0 top-0 h-full w-1.5 -ml-0.5 cursor-col-resize hover:bg-accent/40 active:bg-accent/60 z-50 transition-colors"
+      />
       <div className="flex items-center justify-between px-4 py-3 border-b border-bg-border">
         <div className="flex items-center gap-2">
           <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-accent to-fuchsia-600 flex items-center justify-center">
