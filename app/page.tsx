@@ -61,6 +61,10 @@ export default function Dashboard() {
   // Ask Zilla agent panel + the ticket list it produces (overrides the table).
   const [askOpen, setAskOpen] = useState(false);
   const [assistantResults, setAssistantResults] = useState<TicketSummary[] | null>(null);
+  // Width the Ask Zilla panel currently occupies (0 when closed). The dashboard
+  // reserves this much space on the right so the panel sits BESIDE the content
+  // instead of overlaying it.
+  const [askWidth, setAskWidth] = useState(0);
   // Legal values of the install's mandatory "Type" field (from /api/products).
   const [typeOptions, setTypeOptions] = useState<string[]>([]);
 
@@ -568,7 +572,7 @@ export default function Dashboard() {
   }, []);
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen" style={{ paddingRight: askWidth }}>
       <header className="border-b border-bg-border bg-bg-panel/60 backdrop-blur-sm sticky top-0 z-20">
         <div className="max-w-[1600px] mx-auto px-6 h-14 flex items-center justify-between">
           <div className="flex items-center">
@@ -797,6 +801,7 @@ export default function Dashboard() {
       <AskZillaPanel
         open={askOpen}
         onClose={() => setAskOpen(false)}
+        onWidthChange={setAskWidth}
         onTickets={setAssistantResults}
         context={`The user is viewing the dashboard. Current product filter: ${filters.product || DEFAULT_PRODUCT}.`}
         seed={filters.q}

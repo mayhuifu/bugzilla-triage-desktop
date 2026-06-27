@@ -28,13 +28,16 @@ const MIN_W = 360;
 const maxW = () => (typeof window !== "undefined" ? Math.min(window.innerWidth * 0.95, 1000) : 1000);
 
 export function AskZillaPanel({
-  open, onClose, onTickets, context, seed,
+  open, onClose, onTickets, context, seed, onWidthChange,
 }: {
   open: boolean;
   onClose: () => void;
   onTickets: (tickets: TicketSummary[]) => void;
   context?: string;
   seed?: string;
+  /** Reports the width the panel occupies (0 when closed) so the host can
+   *  reserve space and avoid overlaying content. */
+  onWidthChange?: (w: number) => void;
 }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
@@ -67,6 +70,9 @@ export function AskZillaPanel({
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   }
+
+  // Report occupied width (0 when closed) so the dashboard reserves space.
+  useEffect(() => { onWidthChange?.(open ? width : 0); }, [open, width, onWidthChange]);
 
   // Seed the input from the dashboard search box the first time the panel opens.
   useEffect(() => { if (open && seed && turns.length === 0) setInput(seed); }, [open, seed, turns.length]);
