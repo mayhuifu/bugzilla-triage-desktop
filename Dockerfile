@@ -15,7 +15,10 @@ WORKDIR /app
 # Toolchain for native deps: better-sqlite3 falls back to a node-gyp source
 # build when its prebuilt binary can't be fetched (common on firewalled build
 # hosts) — without python3/make/g++ that fallback hard-fails npm ci.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+# Acquire::Retries rides out transient 5xx from a flaky/proxied apt mirror
+# (corporate networks — and CI sandboxes — return intermittent 503s).
+RUN apt-get -o Acquire::Retries=5 update \
+ && apt-get -o Acquire::Retries=5 install -y --no-install-recommends python3 make g++ \
  && rm -rf /var/lib/apt/lists/*
 # The Electron desktop binary is never used in the server image — skip its
 # ~100 MB postinstall download.
