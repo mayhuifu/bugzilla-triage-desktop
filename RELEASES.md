@@ -12,6 +12,21 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.2 — Dashboard remembers your filters
+
+**Tagged:** 2026-06-13
+
+### Highlights
+
+- **Filters survive a trip into a ticket.** Previously, opening a ticket and
+  going back reset the dashboard to the default product (U300), losing your
+  product / component / severity / status / My-Tickets selection and any
+  status-card you'd clicked. The dashboard now restores the exact view you left
+  — while a fresh app launch still starts on the U300 default. (Persisted per
+  browser session; a full restart resets to the default.)
+
+---
+
 ## v0.7.1 — "My Tickets" = your involved tickets, role-selectable
 
 **Tagged:** 2026-06-11
