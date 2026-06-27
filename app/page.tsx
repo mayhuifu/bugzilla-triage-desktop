@@ -16,6 +16,7 @@ import { TicketFilters, type FilterState } from "@/components/dashboard/TicketFi
 import { TicketTable } from "@/components/dashboard/TicketTable";
 import { SavedFilters } from "@/components/dashboard/SavedFilters";
 import { FileTicketDialog } from "@/components/dashboard/FileTicketDialog";
+import { AskZillaPanel } from "@/components/assistant/AskZillaPanel";
 import {
   getCachedStats, setCachedStats, getCachedTickets, setCachedTickets,
 } from "@/lib/dashboard-cache";
@@ -57,6 +58,9 @@ export default function Dashboard() {
 
   // "File a Ticket" modal (button next to My Tickets).
   const [fileTicketOpen, setFileTicketOpen] = useState(false);
+  // Ask Zilla agent panel + the ticket list it produces (overrides the table).
+  const [askOpen, setAskOpen] = useState(false);
+  const [assistantResults, setAssistantResults] = useState<TicketSummary[] | null>(null);
   // Legal values of the install's mandatory "Type" field (from /api/products).
   const [typeOptions, setTypeOptions] = useState<string[]>([]);
 
@@ -710,6 +714,7 @@ export default function Dashboard() {
               whoami={whoami}
               bucketActive={bucket !== null}
               onFileTicket={() => setFileTicketOpen(true)}
+              onAsk={() => setAskOpen(true)}
             />
           </div>
           <SavedFilters
@@ -733,9 +738,16 @@ export default function Dashboard() {
           </div>
         )}
 
+        {assistantResults && (
+          <div className="flex items-center gap-2 text-xs animate-fade-in">
+            <span className="badge bg-accent/15 text-accent-glow ring-1 ring-accent/40 flex items-center gap-1">✨ {assistantResults.length} result{assistantResults.length === 1 ? "" : "s"} from Ask Zilla</span>
+            <button onClick={() => setAssistantResults(null)} className="text-slate-500 hover:text-slate-300 underline">clear, back to filters</button>
+          </div>
+        )}
+
         <TicketTable
-          tickets={filtered}
-          loading={loadingTickets}
+          tickets={assistantResults ?? filtered}
+          loading={loadingTickets && !assistantResults}
           selectedIds={selectedIds}
           onToggleSelect={onToggleSelect}
           onToggleAll={onToggleAll}
@@ -781,6 +793,14 @@ export default function Dashboard() {
           <span className="text-emerald-400"> Submit to Bugzilla via MCP</span>
         </div>
       </main>
+
+      <AskZillaPanel
+        open={askOpen}
+        onClose={() => setAskOpen(false)}
+        onTickets={setAssistantResults}
+        context={`The user is viewing the dashboard. Current product filter: ${filters.product || DEFAULT_PRODUCT}.`}
+        seed={filters.q}
+      />
 
       <FileTicketDialog
         open={fileTicketOpen}

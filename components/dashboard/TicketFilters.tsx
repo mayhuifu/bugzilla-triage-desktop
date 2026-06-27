@@ -1,6 +1,6 @@
 "use client";
 
-import { Search, Filter, User, FilePlus2 } from "lucide-react";
+import { Search, Filter, User, FilePlus2, Sparkles } from "lucide-react";
 import type { ProductInfo, WhoAmI } from "@/lib/types";
 import { AssigneeFilter } from "./AssigneeFilter";
 
@@ -37,6 +37,7 @@ export function TicketFilters({
   whoami,
   bucketActive = false,
   onFileTicket,
+  onAsk,
 }: {
   state: FilterState;
   onChange: (s: FilterState) => void;
@@ -57,6 +58,8 @@ export function TicketFilters({
   bucketActive?: boolean;
   /** Opens the File-a-Ticket dialog (button next to My Tickets). */
   onFileTicket?: () => void;
+  /** Opens the Ask Zilla agent panel. */
+  onAsk?: () => void;
 }) {
   // Component options come from the selected product when available — that
   // way picking a product narrows the list to its real components rather
@@ -203,6 +206,17 @@ export function TicketFilters({
         >
           <FilePlus2 className="w-3.5 h-3.5" />
           File a Ticket
+        </button>
+      )}
+
+      {onAsk && (
+        <button
+          onClick={onAsk}
+          title="Ask in plain English — search tickets, query 3GPP specs, draft actions"
+          className="input w-auto flex items-center gap-1.5 text-xs text-white bg-gradient-to-r from-accent to-fuchsia-600 hover:opacity-90 ring-0"
+        >
+          <Sparkles className="w-3.5 h-3.5" />
+          Ask Zilla
         </button>
       )}
     </div>
