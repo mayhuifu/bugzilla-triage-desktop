@@ -12,6 +12,43 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.3 — Ask Zilla: chat with your dashboard
+
+**Tagged:** 2026-06-27
+
+### Highlights
+
+The dashboard gains **Ask Zilla** — an AI agent you talk to in plain English,
+in a resizable panel docked to the right of the dashboard.
+
+- **Natural-language ticket search.** Type *"open blocker tickets older than 90
+  days with no update in 5 days"* and the matching tickets fill the dashboard
+  table (you keep sort / select / bulk-triage). Activity chips show exactly how
+  your words became a query.
+- **Ask anything.** *"What does 38.331 say about BWP switching?"*, *"what is
+  RACH?"* — it answers, and can search the bundled 3GPP spec corpus.
+- **Take actions, with your approval.** *"Draft a comment on #16523 asking for
+  logs"* prepares an **approval card** — nothing is written to Bugzilla until
+  you click Approve (routed through the same audited endpoints as triage). It
+  can propose comments, status changes, and new tickets.
+- **Resizable, non-overlaying panel.** Drag the left edge to resize (persists);
+  the dashboard reflows beside it instead of being covered.
+- Works on **any configured AI provider** (a provider-agnostic tool-use loop, so
+  it runs on codex-cli / claude-cli / Anthropic / OpenAI-compatible alike).
+  Gated + rate-limited + per-user like the other AI features; degrades to keyword
+  search when no provider is set.
+
+> **Tip:** on the `codex-cli` provider each query takes ~1–2 min (CLI subprocess
+> latency). Switching the provider to **OpenAI-compatible** in Settings makes it
+> near-instant.
+
+### Also
+
+- **Deploy hardening:** the Docker image's apt step now retries transient mirror
+  5xx (`Acquire::Retries=5`) — more robust on proxied/corporate build networks.
+
+---
+
 ## v0.7.2 — Dashboard remembers your filters
 
 **Tagged:** 2026-06-13
