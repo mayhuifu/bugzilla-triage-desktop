@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw, Database, X, Plus, Loader2, Sparkles, Settings as SettingsIcon, AlertCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -30,9 +30,17 @@ const INITIAL_FILTERS: FilterState = {
 };
 
 const MY_ROLES_KEY = "zilla-my-roles";
+// Active dashboard view (filters + status-card bucket), persisted for the
+// browser session so navigating into a ticket and back restores the scope
+// instead of snapping to the default product. sessionStorage (not local) so it
+// survives in-app navigation but resets on a fresh app launch.
+const DASH_VIEW_KEY = "zilla-dashboard-view";
 
 export default function Dashboard() {
   const router = useRouter();
+  // Records that a saved view WAS applied on mount, so the bootstrap skips the
+  // default-product override (see the restore effect + bootstrap below).
+  const hadSavedViewRef = useRef(false);
 
   const [tickets, setTickets] = useState<TicketSummary[]>([]);
   const [products, setProducts] = useState<ProductInfo[]>([]);
@@ -88,6 +96,33 @@ export default function Dashboard() {
   const [bucket, setBucket] = useState<TicketBucket | null>(null);
   // Page size for the ticket table. Bumps by PAGE_INCREMENT on "Load more".
   const [ticketLimit, setTicketLimit] = useState<number>(PAGE_SIZE);
+
+  // ── Restore the previous dashboard view on mount (e.g. returning from a
+  // ticket) so the user's filters + status-card selection survive the
+  // round-trip instead of resetting to the default product. ──
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem(DASH_VIEW_KEY);
+      if (saved) {
+        const v = JSON.parse(saved) as { filters?: Partial<FilterState>; bucket?: TicketBucket | null };
+        if (v.filters) {
+          setFilters(f => ({ ...f, ...v.filters }));
+          hadSavedViewRef.current = true;   // bootstrap then skips DEFAULT_PRODUCT
+        }
+        if (v.bucket) setBucket(v.bucket);
+      }
+    } catch { /* ignore a malformed saved view */ }
+  }, []);
+  // Persist the active view — gated on scopeReady so the mount/restore window
+  // (where filters are briefly the start-up defaults, and React Strict Mode
+  // double-invokes effects in dev) can never clobber the saved view. By the
+  // time scopeReady flips true, restore has applied and bootstrap has settled.
+  useEffect(() => {
+    if (!scopeReady) return;
+    try {
+      sessionStorage.setItem(DASH_VIEW_KEY, JSON.stringify({ filters, bucket }));
+    } catch { /* ignore quota / disabled storage */ }
+  }, [filters, bucket, scopeReady]);
 
   // ── Debounced freetext query (for server-side Bugzilla quicksearch) ──
   // When the user types a non-numeric search term (assignee, component,
@@ -170,7 +205,10 @@ export default function Dashboard() {
         const list: ProductInfo[] = p.products || [];
         setProducts(list);
         setTypeOptions(p.typeOptions || []);
-        if (list.some(prod => prod.name === DEFAULT_PRODUCT)) {
+        // Apply the default product only on a FRESH view — a restored view
+        // (returning from a ticket) already carries the user's product, even
+        // if that product is "" (an explicit "All products" choice).
+        if (!hadSavedViewRef.current && list.some(prod => prod.name === DEFAULT_PRODUCT)) {
           setFilters(f => f.product ? f : { ...f, product: DEFAULT_PRODUCT });
         }
         if (w?.login) setWhoami(w);
