@@ -12,6 +12,51 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.5 — edit tickets in place + Ask Zilla results stick
+
+**Tagged:** 2026-06-29
+**Published:** —
+
+### Highlights
+
+- **Edit a ticket without leaving Zilla Copilot.** The ticket view gains an
+  **Edit fields / CC / comment** panel: change **component**, **priority**,
+  **assignee**, add/remove **CC**, and post a **comment** — then **Save
+  changes** commits everything to Bugzilla in *one atomic write*. Nothing is
+  written until you save (stage-and-review, matching the rest of the app), and
+  assignee/CC use a live Bugzilla user search. Verified end-to-end against live
+  Bugzilla.
+- **Ask Zilla results survive a round-trip.** Run an Ask Zilla search, click
+  into a ticket, hit Back — your result set (and the *N results from Ask Zilla*
+  banner) is still there, instead of snapping back to the plain filter view.
+  Same session-scoped persistence the dashboard filters already use; "clear,
+  back to filters" is preserved across navigation too.
+
+### Changes
+
+- `components/detail/TicketQuickEdit.tsx` (new): stage-and-save editor panel —
+  component/priority dropdowns, assignee + CC user-typeaheads, comment box, diff
+  badges, single atomic save.
+- `components/ui/UserPicker.tsx` (new): reusable key-safe Bugzilla user
+  typeahead (reused for Assignee + Add-CC).
+- `lib/bugzilla.ts`: `updateBug()` — one `PUT /rest/bug/{id}` carrying every
+  staged change (CC uses add/remove; comment posted as-typed, no AI prefix);
+  `priorityOptions()` reads the install's legal priority values.
+- `app/api/tickets/[id]/route.ts`: `PATCH` field-update endpoint (refuses to
+  write unless Bugzilla is reachable; `?mock=1` seam); `lib/bridge.ts`
+  `bridgeUpdateBug`; `lib/audit.ts` audits component/priority/assignee/cc.
+- `app/api/products/route.ts`: threads `priorityOptions` to the client.
+- `app/tickets/[id]/page.tsx`: wires the editor + in-place refresh on save.
+- `app/page.tsx`: Ask Zilla `assistantResults` folded into the session-persisted
+  dashboard view, so it restores on navigation-back.
+
+### Upgrade notes
+
+- None — purely additive. Field edits write as the signed-in user and are
+  audit-logged in multi-user/server mode.
+
+---
+
 ## v0.7.3 — Ask Zilla: chat with your dashboard
 
 **Tagged:** 2026-06-27
