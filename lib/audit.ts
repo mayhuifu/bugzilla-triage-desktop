@@ -14,7 +14,7 @@ function auditPath(): string {
 }
 
 export function auditBugzillaWrite(
-  action: "create" | "comment" | "label" | "status",
+  action: "create" | "comment" | "label" | "status" | "component" | "priority" | "assignee" | "cc",
   bugId: number | string,
   detail?: string,
 ): void {

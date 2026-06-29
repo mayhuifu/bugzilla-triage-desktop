@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { AlertCircle, GripVertical, Loader2, BookText } from "lucide-react";
-import type { TicketDetail } from "@/lib/types";
+import type { TicketDetail, ProductInfo } from "@/lib/types";
 import { Logo } from "@/components/ui/Logo";
 import Link from "next/link";
 import { TicketDetailHeader } from "@/components/detail/TicketDetailHeader";
+import { TicketQuickEdit } from "@/components/detail/TicketQuickEdit";
 import { TicketDescription } from "@/components/detail/TicketDescription";
 import { TicketComments } from "@/components/detail/TicketComments";
 import { TicketTimeline } from "@/components/detail/TicketTimeline";
@@ -29,6 +30,9 @@ export default function TicketDetailPage() {
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Option sources for the inline field editor (component dropdown + priority).
+  const [productList, setProductList] = useState<ProductInfo[]>([]);
+  const [priorityOpts, setPriorityOpts] = useState<string[]>([]);
 
   // ── Resizable split between ticket context (left) and AI panel (right) ──
   const [asideWidth, setAsideWidth] = useState<number>(SPLIT_DEFAULT);
@@ -87,21 +91,40 @@ export default function TicketDetailPage() {
     try { localStorage.setItem(SPLIT_KEY, String(SPLIT_DEFAULT)); } catch { /* ignore */ }
   }, []);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch(`/api/tickets/${id}`);
-        const data = await res.json();
-        if (data.ticket) setTicket(data.ticket);
-        else setError(data.error || "Ticket not found");
-        if (data.error && data.ticket) setError(`backend warning: ${data.error}`);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load ticket");
-      } finally {
-        setLoading(false);
-      }
-    })();
+  // Reused as the post-save refresh (TicketQuickEdit's onSaved): it swaps in
+  // the updated ticket WITHOUT flipping `loading`, so an inline field edit
+  // reflects in place rather than flashing the full-page spinner.
+  const loadTicket = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/tickets/${id}`);
+      const data = await res.json();
+      if (data.ticket) setTicket(data.ticket);
+      else setError(data.error || "Ticket not found");
+      if (data.error && data.ticket) setError(`backend warning: ${data.error}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load ticket");
+    }
   }, [id]);
+
+  useEffect(() => {
+    setLoading(true);
+    loadTicket().finally(() => setLoading(false));
+  }, [loadTicket]);
+
+  // Component + priority option sources for the editor. Effectively static per
+  // session; mock-falls-back gracefully so the editor still opens offline (it
+  // also merges in the ticket's own current values as a floor).
+  useEffect(() => {
+    fetch("/api/products")
+      .then(r => r.json())
+      .then(d => { setProductList(d.products || []); setPriorityOpts(d.priorityOptions || []); })
+      .catch(() => { /* editor falls back to the ticket's current values */ });
+  }, []);
+
+  const componentOptions = useMemo(
+    () => productList.find(p => p.name === ticket?.product)?.components ?? [],
+    [productList, ticket?.product],
+  );
 
   return (
     <div className="min-h-screen">
@@ -166,6 +189,12 @@ export default function TicketDetailPage() {
                 </div>
               )}
               <TicketDetailHeader ticket={ticket} />
+              <TicketQuickEdit
+                ticket={ticket}
+                componentOptions={componentOptions}
+                priorityOptions={priorityOpts}
+                onSaved={loadTicket}
+              />
               <TicketDescription ticket={ticket} />
               <TicketComments comments={ticket.comments} />
               <TicketTimeline history={ticket.history} />

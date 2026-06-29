@@ -580,6 +580,59 @@ export async function submit(opts: {
   };
 }
 
+// ── direct field edits (component / priority / assignee / CC / comment) ──
+//
+// One atomic PUT /rest/bug/{id} carrying every staged change, so the whole
+// edit lands as a single Bugzilla change-set — one history entry, one audit
+// row per touched field — matching the "stage then save" UX. CC uses
+// Bugzilla's add/remove object form. An optional plain comment rides along in
+// the same PUT and is posted AS-TYPED (no "Analyzed by AI Triage Bot" prefix
+// or label — this is a human edit, not an AI analysis). Throws if nothing
+// changed, or surfaces Bugzilla's own 400/403 (e.g. no edit permission).
+export async function updateBug(opts: {
+  id: number;
+  component?: string;
+  priority?: string;
+  assignedTo?: string;        // Bugzilla login (email)
+  ccAdd?: string[];           // logins to add to CC
+  ccRemove?: string[];        // logins to remove from CC
+  comment?: string;           // optional plain comment, posted as-typed
+}): Promise<{ success: true; ticketId: number; changed: string[]; postedAt: string }> {
+  const { id, component, priority, assignedTo, ccAdd, ccRemove, comment } = opts;
+
+  const payload: Record<string, unknown> = {};
+  const changed: Array<"component" | "priority" | "assignee" | "cc" | "comment"> = [];
+
+  if (component?.trim()) { payload.component = component.trim(); changed.push("component"); }
+  if (priority?.trim()) { payload.priority = priority.trim(); changed.push("priority"); }
+  if (assignedTo?.trim()) { payload.assigned_to = assignedTo.trim(); changed.push("assignee"); }
+
+  const add = (ccAdd ?? []).map(s => s.trim()).filter(Boolean);
+  const remove = (ccRemove ?? []).map(s => s.trim()).filter(Boolean);
+  if (add.length || remove.length) {
+    const cc: { add?: string[]; remove?: string[] } = {};
+    if (add.length) cc.add = add;
+    if (remove.length) cc.remove = remove;
+    payload.cc = cc;
+    changed.push("cc");
+  }
+
+  const body = comment?.trim();
+  if (body) { payload.comment = { body, is_markdown: false }; changed.push("comment"); }
+
+  if (changed.length === 0) throw new Error("No changes to apply");
+
+  await bzPut(`/rest/bug/${id}`, payload);
+
+  // One audit row per field kind touched, so the server-mode log attributes
+  // every change to the signed-in user (desktop mode is a no-op inside audit).
+  for (const field of changed) {
+    auditBugzillaWrite(field, id, field === "assignee" ? assignedTo?.trim() : undefined);
+  }
+
+  return { success: true, ticketId: id, changed, postedAt: new Date().toISOString() };
+}
+
 // ── products ──────────────────────────────────────────────────────
 
 /** Legal values of this install's mandatory "Type" custom field (cf_type),
@@ -601,7 +654,27 @@ export async function ticketTypeOptions(): Promise<string[]> {
   return _typeOptionsCache;
 }
 
-export async function products(): Promise<{ products: ProductInfo[]; typeOptions: string[] }> {
+/** Legal values of the install's `priority` field, "---" excluded. Cached for
+ *  the process lifetime (field definitions are static). Empty array if the
+ *  field can't be read — the ticket-edit dropdown then falls back to just the
+ *  ticket's current value. Mirrors ticketTypeOptions(). */
+let _priorityOptionsCache: string[] | null = null;
+export async function priorityOptions(): Promise<string[]> {
+  if (_priorityOptionsCache) return _priorityOptionsCache;
+  try {
+    const data = await bzGet("/rest/field/bug/priority", []) as {
+      fields?: Array<{ values?: Array<{ name?: string }> }>;
+    };
+    _priorityOptionsCache = (data.fields?.[0]?.values ?? [])
+      .map(v => v.name ?? "")
+      .filter(v => v && v !== "---");
+  } catch {
+    _priorityOptionsCache = []; // unreadable field — edit form keeps the current value only
+  }
+  return _priorityOptionsCache;
+}
+
+export async function products(): Promise<{ products: ProductInfo[]; typeOptions: string[]; priorityOptions: string[] }> {
   const data = await bzGet("/rest/product", [
     ["type", "accessible"],
     ["include_fields", "name,is_active,components.name,components.is_active,versions.name,versions.is_active"],
@@ -624,7 +697,11 @@ export async function products(): Promise<{ products: ProductInfo[]; typeOptions
     list.push({ name: p.name ?? "", components, versions });
   }
   list.sort((a, b) => a.name.localeCompare(b.name));
-  return { products: list, typeOptions: await ticketTypeOptions() };
+  return {
+    products: list,
+    typeOptions: await ticketTypeOptions(),
+    priorityOptions: await priorityOptions(),
+  };
 }
 
 // ── whoami (with env-var fallback) ────────────────────────────────
