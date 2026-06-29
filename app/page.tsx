@@ -31,10 +31,12 @@ const INITIAL_FILTERS: FilterState = {
 };
 
 const MY_ROLES_KEY = "zilla-my-roles";
-// Active dashboard view (filters + status-card bucket), persisted for the
-// browser session so navigating into a ticket and back restores the scope
-// instead of snapping to the default product. sessionStorage (not local) so it
-// survives in-app navigation but resets on a fresh app launch.
+// Active dashboard view (filters + status-card bucket + any Ask Zilla result
+// set), persisted for the browser session so navigating into a ticket and back
+// restores the exact view the user left — including an Ask Zilla result list —
+// instead of snapping to the default product / underlying filter view.
+// sessionStorage (not local) so it survives in-app navigation but resets on a
+// fresh app launch.
 const DASH_VIEW_KEY = "zilla-dashboard-view";
 
 export default function Dashboard() {
@@ -112,12 +114,22 @@ export default function Dashboard() {
     try {
       const saved = sessionStorage.getItem(DASH_VIEW_KEY);
       if (saved) {
-        const v = JSON.parse(saved) as { filters?: Partial<FilterState>; bucket?: TicketBucket | null };
+        const v = JSON.parse(saved) as {
+          filters?: Partial<FilterState>;
+          bucket?: TicketBucket | null;
+          assistantResults?: TicketSummary[] | null;
+        };
         if (v.filters) {
           setFilters(f => ({ ...f, ...v.filters }));
           hadSavedViewRef.current = true;   // bootstrap then skips DEFAULT_PRODUCT
         }
         if (v.bucket) setBucket(v.bucket);
+        // Restore the Ask Zilla result set too — without this, returning from a
+        // ticket would drop back to the underlying filter view instead of the
+        // Ask Zilla results the user was looking at when they clicked through.
+        if (Array.isArray(v.assistantResults) && v.assistantResults.length) {
+          setAssistantResults(v.assistantResults);
+        }
       }
     } catch { /* ignore a malformed saved view */ }
   }, []);
@@ -128,9 +140,9 @@ export default function Dashboard() {
   useEffect(() => {
     if (!scopeReady) return;
     try {
-      sessionStorage.setItem(DASH_VIEW_KEY, JSON.stringify({ filters, bucket }));
+      sessionStorage.setItem(DASH_VIEW_KEY, JSON.stringify({ filters, bucket, assistantResults }));
     } catch { /* ignore quota / disabled storage */ }
-  }, [filters, bucket, scopeReady]);
+  }, [filters, bucket, assistantResults, scopeReady]);
 
   // ── Debounced freetext query (for server-side Bugzilla quicksearch) ──
   // When the user types a non-numeric search term (assignee, component,
