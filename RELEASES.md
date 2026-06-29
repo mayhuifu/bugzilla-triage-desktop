@@ -15,7 +15,7 @@ Single source of truth for what shipped in each tagged release. New entries land
 ## v0.7.5 — edit tickets in place + Ask Zilla results stick
 
 **Tagged:** 2026-06-29
-**Published:** —
+**Published:** 2026-06-29
 
 ### Highlights
 
