@@ -12,8 +12,9 @@ installers are unaffected — this is a separate, server-only path.
 - Network routes from the VM to:
   - the company Bugzilla (e.g. `ticketing.internal.umsemi.com`),
   - the company LLM endpoint (e.g. `api.deepseek.com`),
-  - `github.com` (first-run download of the 3GPP corpus, ~50 MB; an internal
-    mirror can replace this via `CORPUS_MANIFEST_URL`).
+  - `github.com` — only if you install the optional 3GPP corpus from the default
+    source (see "3GPP spec corpus" below); an internal mirror replaces it via
+    `CORPUS_MANIFEST_URL`, or mount a prebuilt file for a fully-offline install.
 - Sized for ≤ ~20 concurrent users on one VM (2 vCPU / 4 GB RAM is plenty).
 
 ## Install (5 steps)
@@ -34,6 +35,45 @@ docker compose ps              # 4. wait for app: healthy
 > **Offline build host?** Run `npm run fetch:model` on a connected machine
 > first and copy the repo (with `models/` populated) to the build host — the
 > Dockerfile detects the staged model and skips the download.
+
+## 3GPP spec corpus (optional, shared — installed once by you)
+
+The corpus lets AI triage cite real Rel-17 NR/LTE spec excerpts instead of
+paraphrasing from training data. In server mode it's a **single shared file** on
+the `/data` volume that every user reads — there is **no per-user download**
+(individual users are never prompted). It's optional: triage still works without
+it (model paraphrase).
+
+Install it **once**, after the server is up:
+
+```bash
+# default source = the corpus repo's GitHub release:
+docker compose exec app node scripts/install-corpus.mjs
+
+# behind the Great Firewall / offline → point at an internal mirror hosting the
+# same manifest.json + .sqlite.gz (the manifest's artifact.url decides where the
+# .gz is fetched):
+docker compose exec -e CORPUS_MANIFEST_URL=https://mirror.internal/3gpp-corpus.manifest.json \
+    app node scripts/install-corpus.mjs
+
+# replace an installed corpus (e.g. a newer rel17 build):
+docker compose exec app node scripts/install-corpus.mjs --force
+```
+
+It downloads → verifies sha256 → atomically installs to
+`/data/bugzilla-triage-desktop/corpus/corpus.sqlite`, and is idempotent (re-runs
+are a no-op unless `--force`). Restart the app (`docker compose restart app`) if
+it was already running so it reopens the file; the next Spec search / triage on
+any account then uses it.
+
+**Fully offline alternative — mount a prebuilt file** (no network at all):
+
+```yaml
+# in docker-compose.yml, under the app service:
+volumes:
+  - btdata:/data
+  - /opt/zilla/corpus.sqlite:/data/bugzilla-triage-desktop/corpus/corpus.sqlite:ro
+```
 
 ## Environment reference
 
@@ -78,8 +118,9 @@ Everything stateful lives in the **`btdata` volume**, mounted at `/data`:
    profile) sets up with *their* key; each runs an AI triage and submits — the
    Bugzilla comments are authored by the respective person. Details/gotchas:
    `scripts/dev-multiuser-smoke.sh` in the repo root.
-6. 3GPP corpus: open the Spec page, run a search → results appear (first use
-   triggers the corpus download; watch `docker compose logs -f app`).
+6. 3GPP corpus (optional): run `docker compose exec app node scripts/install-corpus.mjs`
+   once (see "3GPP spec corpus" above), then open the Spec page and search →
+   results cite real clauses. Skip it and triage still works (paraphrase).
 7. After a submit: `audit.log` gained a line with the submitter's email.
 8. In-container sanity (only if something's off):
    `docker compose exec app ls node_modules/sqlite-vec-linux-x64/vec0.so models/Xenova/bge-small-en-v1.5/config.json`

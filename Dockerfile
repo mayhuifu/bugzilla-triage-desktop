@@ -54,6 +54,11 @@ COPY --from=build /app/models ./models
 # sqlite-vec platform package staged by the build stage (dir name preserved —
 # matches the build arch: sqlite-vec-linux-x64 on x64 hosts, -arm64 on ARM)
 COPY --from=build /vecpkg ./node_modules/
+# Server-side corpus installer — an admin runs this ONCE after deploy to fetch
+# the shared 3GPP corpus into /data (no per-user download). Self-contained .mjs
+# (node built-ins only), so it runs in this standalone image:
+#   docker exec <container> node scripts/install-corpus.mjs
+COPY --from=build /app/scripts/install-corpus.mjs ./scripts/install-corpus.mjs
 RUN mkdir -p /data && chown -R node:node /data /app
 USER node
 VOLUME /data

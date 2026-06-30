@@ -15,6 +15,7 @@
     "fetch:model": "node scripts/fetch-embed-model.mjs",
     "fetch:reranker": "node scripts/fetch-reranker-model.mjs",
     "fetch:models": "npm run fetch:model && npm run fetch:reranker",
+  "install-corpus": "node scripts/install-corpus.mjs",
     "spike:embedder": "node scripts/spike-embedder.mjs",
     "spike:reranker": "node scripts/spike-reranker.mjs",
     "dist:win": "next build && electron-builder --win --x64 --publish=never",
