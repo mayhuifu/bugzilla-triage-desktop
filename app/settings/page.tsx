@@ -37,6 +37,7 @@ interface SettingsView {
   hasAnthropicApiKey: boolean;
   filePath: string;
   configured: boolean;
+  multiUser: boolean;
 }
 
 // Known Anthropic models that get their own dropdown entries. Anything else
@@ -217,6 +218,18 @@ export default function SettingsPage() {
           </p>
         </div>
 
+        {!loading && view?.multiUser && (
+          <div className="card border-accent/30 bg-accent/5 p-4 text-xs text-slate-300 flex items-start gap-2.5">
+            <Lock className="w-4 h-4 text-accent shrink-0 mt-0.5" />
+            <div>
+              You&apos;re on a shared <span className="text-slate-100 font-medium">Zilla Copilot server</span>.
+              The Bugzilla URL and the 3GPP spec corpus are managed by your admin — here you can update your{" "}
+              <span className="text-slate-100">API key</span>, <span className="text-slate-100">AI provider</span>,
+              and <span className="text-slate-100">appearance</span>. Changes save to your encrypted profile.
+            </div>
+          </div>
+        )}
+
         {loading && (
           <div className="card p-6 flex items-center gap-3">
             <Loader2 className="w-4 h-4 animate-spin text-accent" />
@@ -238,11 +251,15 @@ export default function SettingsPage() {
                 )}
               </div>
 
-              <Field label="Bugzilla URL" hint="e.g. https://ticketing.internal.umsemi.com">
+              <Field
+                label="Bugzilla URL"
+                hint={view.multiUser ? "Managed by your server admin — same for everyone on this server." : "e.g. https://ticketing.internal.umsemi.com"}
+              >
                 <input
                   type="url"
-                  className="input"
+                  className="input disabled:opacity-60 disabled:cursor-not-allowed"
                   value={bugzillaUrl}
+                  disabled={view.multiUser}
                   onChange={e => setBugzillaUrl(e.target.value)}
                   placeholder="https://bugzilla.example.com"
                 />
@@ -278,31 +295,37 @@ export default function SettingsPage() {
                 </div>
               </Field>
 
-              <Field label="Your login email" hint="Used to filter 'My Tickets'. Must match your Bugzilla account.">
+              <Field
+                label="Your login email"
+                hint={view.multiUser ? "Set when you registered — contact your admin to change it." : "Used to filter 'My Tickets'. Must match your Bugzilla account."}
+              >
                 <input
                   type="email"
-                  className="input"
+                  className="input disabled:opacity-60 disabled:cursor-not-allowed"
                   value={bugzillaLogin}
+                  disabled={view.multiUser}
                   onChange={e => setBugzillaLogin(e.target.value)}
                   placeholder="you@company.com"
                 />
               </Field>
 
-              <label className="flex items-start gap-2 cursor-pointer select-none p-2 rounded-md bg-bg-panel/40 hover:bg-bg-panel/60 border border-bg-border/40">
-                <input
-                  type="checkbox"
-                  checked={bugzillaInsecure}
-                  onChange={e => setBugzillaInsecure(e.target.checked)}
-                  className="mt-0.5 w-3.5 h-3.5 accent-accent"
-                />
-                <div className="flex-1">
-                  <div className="text-xs text-slate-200">Skip TLS verification</div>
-                  <div className="text-[11px] text-slate-500 mt-0.5">
-                    Enable for internal Bugzilla instances using self-signed certificates.
-                    Disable for public Bugzilla deployments with valid certs.
+              {!view.multiUser && (
+                <label className="flex items-start gap-2 cursor-pointer select-none p-2 rounded-md bg-bg-panel/40 hover:bg-bg-panel/60 border border-bg-border/40">
+                  <input
+                    type="checkbox"
+                    checked={bugzillaInsecure}
+                    onChange={e => setBugzillaInsecure(e.target.checked)}
+                    className="mt-0.5 w-3.5 h-3.5 accent-accent"
+                  />
+                  <div className="flex-1">
+                    <div className="text-xs text-slate-200">Skip TLS verification</div>
+                    <div className="text-[11px] text-slate-500 mt-0.5">
+                      Enable for internal Bugzilla instances using self-signed certificates.
+                      Disable for public Bugzilla deployments with valid certs.
+                    </div>
                   </div>
-                </div>
-              </label>
+                </label>
+              )}
 
               {/* Test connection — runs without saving so the user can
                   iterate on credentials without committing each attempt. */}
@@ -509,10 +532,14 @@ export default function SettingsPage() {
             </section>
 
             {/* ── 3GPP spec corpus (optional) ─────────────────── */}
-            <CorpusSection
-              manifestUrl={corpusManifestUrl}
-              onManifestUrlChange={setCorpusManifestUrl}
-            />
+            {/* Server mode: the corpus is a shared, admin-installed asset on the
+                server — not a per-user download — so the section is hidden. */}
+            {!view.multiUser && (
+              <CorpusSection
+                manifestUrl={corpusManifestUrl}
+                onManifestUrlChange={setCorpusManifestUrl}
+              />
+            )}
 
             {/* ── Appearance ─────────────────────────────────── */}
             <section className="card p-5 space-y-4">
@@ -606,10 +633,16 @@ export default function SettingsPage() {
             <div className="text-[11px] text-slate-600 flex items-start gap-2 px-1">
               <Lock className="w-3 h-3 mt-0.5 shrink-0" />
               <div>
-                Stored at <code className="text-slate-500 font-mono">{view.filePath}</code> with
-                owner-only file permissions (0600). API keys are stored as plaintext in this
-                milestone; the upcoming Electron build will encrypt them at rest using the OS
-                keychain.
+                {view.multiUser ? (
+                  <>Your API key and AI-provider settings are stored <span className="text-slate-500">encrypted</span> in
+                  the server&apos;s per-user profile, keyed to your login. The Bugzilla URL and 3GPP corpus
+                  are configured by your server admin.</>
+                ) : (
+                  <>Stored at <code className="text-slate-500 font-mono">{view.filePath}</code> with
+                  owner-only file permissions (0600). API keys are stored as plaintext in this
+                  milestone; the upcoming Electron build will encrypt them at rest using the OS
+                  keychain.</>
+                )}
               </div>
             </div>
           </>

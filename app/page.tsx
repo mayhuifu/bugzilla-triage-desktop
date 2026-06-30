@@ -93,6 +93,10 @@ export default function Dashboard() {
   // user hasn't entered Bugzilla credentials yet (show banner + skip fetches),
   // `true` once /api/settings reports the connection is configured.
   const [configured, setConfigured] = useState<boolean | null>(null);
+  // Server (multi-user) mode flag from /api/settings — gates the per-user
+  // corpus banner (in server mode the corpus is a shared, admin-installed
+  // asset, not a per-user download).
+  const [multiUser, setMultiUser] = useState(false);
   // Gate for the data-loading effects. Stays false until the bootstrap has
   // settled the default scope (products fetched + DEFAULT_PRODUCT applied).
   // Without this, the effects fire once with the EMPTY "all-products" scope
@@ -213,9 +217,10 @@ export default function Dashboard() {
     let cancelled = false;
     // Check settings first; if Bugzilla isn't configured, skip the
     // products/whoami fetches — they'd just 502 against an unset URL.
-    fetch("/api/settings").then(r => r.json()).then((s: { configured: boolean }) => {
+    fetch("/api/settings").then(r => r.json()).then((s: { configured: boolean; multiUser?: boolean }) => {
       if (cancelled) return;
       setConfigured(s.configured);
+      setMultiUser(Boolean(s.multiUser));
       if (!s.configured) return;
       Promise.all([
         fetch("/api/products").then(r => r.json()).catch(() => ({ products: [] })),
@@ -613,7 +618,7 @@ export default function Dashboard() {
       <main className="max-w-[1600px] mx-auto px-6 py-6 space-y-5">
         {/* First-launch nudge for installing the optional 3GPP RAG corpus.
             Self-hides once installed or after the user dismisses it. */}
-        <CorpusInstallBanner />
+        {!multiUser && <CorpusInstallBanner />}
 
         <div className="flex items-baseline justify-between">
           <div>

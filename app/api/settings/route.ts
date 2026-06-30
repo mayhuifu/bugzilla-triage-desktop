@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   loadSettings, saveSettings, validateSettings, settingsForUi,
-  isBugzillaConfigured, isMultiUser, type Settings,
+  isBugzillaConfigured, isMultiUser, getEffectiveSettings, type Settings,
 } from "@/lib/settings";
 import { bumpServerCacheVersion } from "@/lib/server-cache";
 import { withUser } from "@/lib/users/with-user";
+import { getCurrentUser } from "@/lib/users/context";
+import { upsertUser } from "@/lib/users/store";
 
 export const dynamic = "force-dynamic";
 
@@ -12,10 +14,15 @@ export const dynamic = "force-dynamic";
 // here: the page never sees the raw Bugzilla or Anthropic API keys, only
 // a `hasFooKey` boolean for the "(saved)" indicator next to the input.
 export const GET = withUser(async () => {
-  const settings = loadSettings();
+  // Server mode → the EFFECTIVE settings (env Bugzilla URL + this user's
+  // encrypted profile key/LLM). Desktop mode → the single settings.json.
+  // Using loadSettings() here was the bug that made every server user look
+  // "not configured" no matter what they registered at /setup.
+  const settings = getEffectiveSettings();
   return NextResponse.json({
     ...settingsForUi(settings),
     configured: isBugzillaConfigured(settings),
+    multiUser: isMultiUser(),
   });
 });
 
@@ -24,17 +31,61 @@ export const GET = withUser(async () => {
 // didn't touch the field, and we keep the prior stored value in that
 // case. That lets a user save a URL change without re-typing their API key.
 export const POST = withUser(async (req: Request) => {
-  if (isMultiUser()) {
-    return NextResponse.json(
-      { error: "In server mode, settings are per-user — change them in /setup." },
-      { status: 403 },
-    );
-  }
   let body: Partial<Settings>;
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "invalid JSON" }, { status: 400 });
+  }
+
+  // ── Server mode: update the CURRENT user's per-user profile ──────────
+  // Bugzilla URL/insecure + the spec corpus are server-global (env) and are
+  // NOT editable here; only the per-user fields (API key, LLM provider/base/
+  // key, model, theme) are written to the encrypted profile. Secrets use the
+  // write-only sentinel — a blank field keeps the stored value. (`useCompanyLlm`
+  // is toggled only at /setup, so it's preserved here.)
+  if (isMultiUser()) {
+    const u = getCurrentUser();
+    if (!u) return NextResponse.json({ error: "no active session" }, { status: 401 });
+    const llmProvider: Settings["llmProvider"] =
+      body.llmProvider === "openai-compatible" || body.llmProvider === "anthropic" ||
+      body.llmProvider === "claude-cli" || body.llmProvider === "codex-cli"
+        ? body.llmProvider : (u.llmProvider as Settings["llmProvider"]);
+    const themeMode: Settings["themeMode"] =
+      body.themeMode === "light" || body.themeMode === "dark" || body.themeMode === "system"
+        ? body.themeMode : (u.themeMode as Settings["themeMode"]);
+    const mergedKey = body.bugzillaApiKey?.trim() || u.bugzillaApiKey;
+    const mergedLlmKey = body.anthropicApiKey?.trim() || u.llmApiKey;
+    const mergedBaseUrl = (body.llmBaseUrl ?? u.llmBaseUrl).trim().replace(/\/$/, "");
+    const mergedModel = (body.defaultModel ?? u.defaultModel).trim() || u.defaultModel;
+
+    upsertUser({
+      email: u.email,
+      bugzillaApiKey: mergedKey,
+      llmProvider, llmBaseUrl: mergedBaseUrl, llmApiKey: mergedLlmKey,
+      defaultModel: mergedModel,
+      useCompanyLlm: u.useCompanyLlm,
+      themeMode,
+    });
+    bumpServerCacheVersion(); // key/LLM may have changed → drop cached whoami/products/stats
+
+    // Build the response view from the saved values + server-global URL —
+    // getEffectiveSettings() here would read the now-stale request-scoped user.
+    const saved: Settings = {
+      bugzillaUrl: (process.env.BUGZILLA_URL || "").replace(/\/$/, ""),
+      bugzillaInsecure: (process.env.BUGZILLA_INSECURE || "").toLowerCase() === "true",
+      bugzillaLogin: u.email,
+      bugzillaApiKey: mergedKey,
+      llmProvider, llmBaseUrl: mergedBaseUrl, anthropicApiKey: mergedLlmKey,
+      defaultModel: mergedModel, themeMode,
+      corpusManifestUrl: "", corpusVersion: "", corpusAutoUpdate: false,
+    };
+    return NextResponse.json({
+      ...settingsForUi(saved),
+      configured: isBugzillaConfigured(saved),
+      multiUser: true,
+      saved: true,
+    });
   }
 
   const current = loadSettings();
