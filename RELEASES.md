@@ -12,6 +12,46 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.9 — one-command server-side 3GPP corpus install
+
+**Tagged:** 2026-06-30
+**Published:** 2026-06-30
+
+### Highlights
+
+- **The 3GPP corpus is installed once by the admin — never per-user.** v0.7.8
+  removed the per-user "Download corpus" prompt in server mode; this adds the
+  matching install path so the corpus is a single shared file on the server.
+  An admin runs one command after deploy:
+  ```
+  docker compose exec app node scripts/install-corpus.mjs
+  ```
+  It downloads → verifies sha256 → atomically installs the shared corpus to
+  `/data/bugzilla-triage-desktop/corpus/corpus.sqlite`, which every user reads.
+  Idempotent (re-runs are a no-op); `--force` replaces; `CORPUS_MANIFEST_URL`
+  points at an internal mirror for offline/China; or mount a prebuilt
+  `corpus.sqlite` for a fully-offline install. Optional — triage still works
+  without it (model paraphrase). Verified end-to-end (download → 193 MB SQLite).
+
+### Changes
+
+- `scripts/install-corpus.mjs` (new): self-contained installer (node built-ins
+  only, so it runs inside the standalone image), mirroring the app's download +
+  sha256-verify + gunzip + atomic-install logic.
+- `package.json`: adds `npm run install-corpus`.
+- `Dockerfile`: copies the installer into the server image so
+  `docker exec <container> node scripts/install-corpus.mjs` works.
+- `deploy/README.md`: new "3GPP spec corpus" section; corrected smoke step (the
+  corpus is admin-installed, not first-use-downloaded).
+
+### Upgrade notes
+
+- Build tooling + docs only; no runtime/app change. Rebuild the server image
+  from this tag to get the installer inside the container. Desktop mode
+  unaffected.
+
+---
+
 ## v0.7.8 — server mode: per-user settings load + save, shared corpus
 
 **Tagged:** 2026-06-30
