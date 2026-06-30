@@ -89,7 +89,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "BUGZILLA_URL is not configured on the server" }, { status: 500 });
   }
 
-  const keyCheck = await validateBugzillaKey(bzUrl, bugzillaApiKey, bzInsecure);
+  const keyCheck = await validateBugzillaKey(bzUrl, bugzillaApiKey, email, bzInsecure);
   if (!keyCheck.ok) {
     return NextResponse.json(
       { error: `Bugzilla key check failed: ${keyCheck.error}` },
@@ -125,86 +125,106 @@ export async function POST(req: Request) {
 
 // ── Inline Bugzilla key validator ─────────────────────────────────
 //
-// Mirrors the node:https request pattern from lib/bugzilla.ts (nodeRequest)
-// and app/api/settings/test/route.ts (fetchJson): construct a URL, pass
-// rejectUnauthorized: !insecure, stream response chunks, JSON.parse on end.
-// We call /rest/whoami because it requires a valid API key and returns a name
-// — giving us both auth confirmation and a human-readable identity.
+// Validates the prospective user's API key against the server's Bugzilla,
+// WITHOUT lib/bugzilla.ts's whoami() (that reads the effective settings, not
+// this not-yet-registered key). We deliberately do NOT rely on /rest/whoami:
+// it was added after Bugzilla 5.0, and internal installs that predate it (e.g.
+// the one this app targets) 404 that path — which blocked registration even
+// though every other endpoint the app uses works fine. Instead:
+//   1. GET /rest/valid_login?login=<email> — the purpose-built check: returns
+//      result:true iff the key is a valid login FOR this email, which also
+//      enforces the "email must match your Bugzilla account" promise. Present
+//      since Bugzilla 5.0 — a superset of installs that ship /rest/whoami.
+//   2. Fallback GET /rest/user?names=<email> — the same user endpoint the app
+//      uses everywhere; a 2xx with a matching user confirms key + account.
+// A bad key fails both (Bugzilla returns an auth error, surfaced verbatim).
 
 interface ValidateResult {
   ok: boolean;
-  name?: string;
   error?: string;
 }
+
+interface RawResponse { status: number; text: string; err?: string }
 
 function validateBugzillaKey(
   baseUrl: string,
   apiKey: string,
+  email: string,
   insecure: boolean,
   timeoutMs = 15_000,
 ): Promise<ValidateResult> {
-  return new Promise(resolve => {
-    let settled = false;
-    function done(r: ValidateResult) {
-      if (!settled) { settled = true; resolve(r); }
-    }
-
-    let u: URL;
-    try {
-      u = new URL(`${baseUrl}/rest/whoami`);
-    } catch {
-      done({ ok: false, error: "BUGZILLA_URL is not a valid URL" });
-      return;
-    }
-    u.searchParams.set("api_key", apiKey);
-
-    const isHttps = u.protocol === "https:";
-    const mod = isHttps ? https : http;
-
-    const req = mod.request(
-      {
-        method: "GET",
-        hostname: u.hostname,
-        port: u.port || (isHttps ? 443 : 80),
-        path: `${u.pathname}${u.search}`,
-        rejectUnauthorized: !insecure,
-        timeout: timeoutMs,
-      },
-      res => {
-        const chunks: Buffer[] = [];
-        res.on("data", (c: Buffer) => chunks.push(c));
-        res.on("end", () => {
-          const text = Buffer.concat(chunks).toString("utf8");
-          const status = res.statusCode ?? 0;
-          if (status < 200 || status >= 300) {
-            // Bugzilla returns JSON error details on 400/401 — surface message if possible.
-            let detail = `HTTP ${status}`;
-            try {
-              const parsed = JSON.parse(text) as { message?: string };
-              if (parsed.message) detail += `: ${parsed.message}`;
-            } catch { /* ignore */ }
-            done({ ok: false, error: detail });
-            return;
-          }
-          try {
-            const data = JSON.parse(text) as { name?: string; id?: number };
-            if (data.name || data.id) {
-              done({ ok: true, name: data.name });
-            } else {
-              done({ ok: false, error: "unexpected response from /rest/whoami" });
-            }
-          } catch {
-            done({ ok: false, error: "response was not JSON" });
-          }
-        });
-        res.on("error", (err: Error) => done({ ok: false, error: err.message }));
-      },
-    );
-    req.on("error", (err: Error) => done({ ok: false, error: err.message }));
-    req.on("timeout", () => {
-      req.destroy();
-      done({ ok: false, error: `timeout after ${timeoutMs}ms` });
+  // Single GET against the Bugzilla REST API; resolves with status + body
+  // (never rejects). Mirrors the node:https pattern from lib/bugzilla.ts.
+  function get(restPath: string): Promise<RawResponse> {
+    return new Promise(resolve => {
+      let u: URL;
+      try {
+        u = new URL(`${baseUrl}${restPath}`);
+      } catch {
+        resolve({ status: 0, text: "", err: "BUGZILLA_URL is not a valid URL" });
+        return;
+      }
+      u.searchParams.set("api_key", apiKey);
+      const isHttps = u.protocol === "https:";
+      const mod = isHttps ? https : http;
+      const req = mod.request(
+        {
+          method: "GET",
+          hostname: u.hostname,
+          port: u.port || (isHttps ? 443 : 80),
+          path: `${u.pathname}${u.search}`,
+          rejectUnauthorized: !insecure,
+          timeout: timeoutMs,
+        },
+        res => {
+          const chunks: Buffer[] = [];
+          res.on("data", (c: Buffer) => chunks.push(c));
+          res.on("end", () =>
+            resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString("utf8") }));
+          res.on("error", (err: Error) => resolve({ status: 0, text: "", err: err.message }));
+        },
+      );
+      req.on("error", (err: Error) => resolve({ status: 0, text: "", err: err.message }));
+      req.on("timeout", () => { req.destroy(); resolve({ status: 0, text: "", err: `timeout after ${timeoutMs}ms` }); });
+      req.end();
     });
-    req.end();
-  });
+  }
+
+  const is2xx = (s: number) => s >= 200 && s < 300;
+  const bzMessage = (text: string, status: number): string => {
+    let detail = `HTTP ${status}`;
+    try { const p = JSON.parse(text) as { message?: string }; if (p.message) detail += `: ${p.message}`; } catch { /* not JSON */ }
+    return detail;
+  };
+
+  return (async () => {
+    // 1. valid_login — definitive key+email check on installs that have it.
+    const vl = await get(`/rest/valid_login?login=${encodeURIComponent(email)}`);
+    if (vl.err) return { ok: false, error: vl.err };
+    if (is2xx(vl.status)) {
+      try {
+        const d = JSON.parse(vl.text) as { result?: boolean };
+        if (d.result === true) return { ok: true };
+        if (d.result === false) {
+          return { ok: false, error: `the API key is not a valid login for ${email} — check the key belongs to this account` };
+        }
+      } catch { /* unexpected shape — fall through to the user check */ }
+    }
+
+    // 2. Fallback: fetch the user's own record (works wherever the app works).
+    const usr = await get(`/rest/user?names=${encodeURIComponent(email)}`);
+    if (usr.err) return { ok: false, error: usr.err };
+    if (is2xx(usr.status)) {
+      try {
+        const d = JSON.parse(usr.text) as { users?: unknown[] };
+        if (Array.isArray(d.users) && d.users.length > 0) return { ok: true };
+        return { ok: false, error: `key accepted but no Bugzilla account matches ${email}` };
+      } catch { /* fall through to the error below */ }
+    }
+
+    // Neither succeeded — surface the most informative Bugzilla error. Prefer
+    // the user-endpoint status (it reflects auth failures for a bad key).
+    const pick = usr.status ? usr : vl;
+    return { ok: false, error: bzMessage(pick.text, pick.status) };
+  })();
 }
