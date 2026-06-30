@@ -12,6 +12,39 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.6 — server setup works on Bugzilla without /rest/whoami
+
+**Tagged:** 2026-06-29
+**Published:** 2026-06-29
+
+### Highlights
+
+- **Fixes server / multi-user onboarding on Bugzilla installs that lack
+  `/rest/whoami`.** The `/setup` page's "Bugzilla key check" called
+  `/rest/whoami`, which Bugzilla deployments older than the release that
+  introduced that endpoint return **404** for (`code 32614`) — blocking
+  registration with *"Bugzilla key check failed: HTTP 404…"* even though every
+  other endpoint the app uses works fine. The check now validates via
+  `GET /rest/valid_login?login=<email>` (confirming the key is a valid login
+  *for that email*), falling back to `GET /rest/user?names=<email>`. A wrong key
+  is still rejected with Bugzilla's own message, and an email that doesn't match
+  the key is caught. Desktop mode was never affected (it already falls back).
+
+### Changes
+
+- `app/api/setup/route.ts`: `validateBugzillaKey()` no longer depends on
+  `/rest/whoami`; it now takes the email and uses a `valid_login` → `user`
+  fallback chain. Verified end-to-end against a live `/rest/whoami`-less
+  Bugzilla (valid key → ok, bad key → rejected, mismatched email → rejected).
+
+### Upgrade notes
+
+- Server / multi-user deployments must be **redeployed** with this build for the
+  fix to take effect — the key check runs server-side. Desktop mode is
+  unaffected. Purely additive otherwise.
+
+---
+
 ## v0.7.5 — edit tickets in place + Ask Zilla results stick
 
 **Tagged:** 2026-06-29
