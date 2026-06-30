@@ -12,6 +12,55 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.8 — server mode: per-user settings load + save, shared corpus
+
+**Tagged:** 2026-06-30
+**Published:** 2026-06-30
+
+### Highlights
+
+Three fixes that made multi-user / server mode actually usable after a user
+registers at `/setup`:
+
+- **Dashboard now loads.** `/api/settings` reported `configured: false` for every
+  registered server user — it read the empty desktop `settings.json` instead of
+  the per-user profile — so the dashboard stuck on *"connect to your Bugzilla to
+  get started"* and never loaded tickets. It now uses the effective per-user
+  settings (env Bugzilla URL + the user's encrypted key).
+- **Settings are now saveable per-user.** Saving in server mode hard-failed with
+  *"In server mode, settings are per-user — change them in /setup"* (a 403, and
+  `/setup` was one-time). The settings page now updates the signed-in user's
+  **encrypted profile** — API key, AI provider, model, theme — with the usual
+  write-only secret handling (blank = keep stored). Server-global fields
+  (Bugzilla URL / TLS / login) are shown read-only; the 3GPP corpus section is
+  hidden.
+- **Corpus is a shared asset, not a per-user nag.** The "Download corpus" banner
+  no longer appears for individual server users — in server mode the corpus is
+  installed once by the admin (mount a prebuilt `corpus.sqlite` in the data
+  volume, or trigger `POST /api/corpus/download` once). Triage still falls back
+  to model paraphrase when it's absent.
+
+Verified end-to-end in a browser against a live, `/rest/whoami`-less Bugzilla:
+registration → dashboard loads real tickets → settings save persists → no corpus
+prompt. Desktop (single-user) mode is unchanged.
+
+### Changes
+
+- `app/api/settings/route.ts`: GET uses `getEffectiveSettings()` + returns
+  `multiUser`; POST updates the current user's profile in server mode
+  (`getCurrentUser()` → `upsertUser()`), preserving secrets.
+- `app/settings/page.tsx`: server-mode banner; disabled Bugzilla URL / login /
+  TLS fields; hidden `CorpusSection`; per-user footer copy.
+- `app/page.tsx`: hide `CorpusInstallBanner` in server mode (gated on `multiUser`).
+
+### Upgrade notes
+
+- Server / multi-user deployments must be **redeployed** with this build.
+  Desktop mode is unaffected. Purely additive otherwise. Admins should install
+  the 3GPP corpus server-side if they want spec-cited triage (see Highlights).
+
+---
+
 ## v0.7.7 — model downloads default to hf-mirror.com (China builds)
 
 **Tagged:** 2026-06-30
