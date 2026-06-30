@@ -12,6 +12,39 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.7 — model downloads default to hf-mirror.com (China builds)
+
+**Tagged:** 2026-06-30
+**Published:** 2026-06-30
+
+### Highlights
+
+- **Docker / model-fetch builds work behind the Great Firewall.** The embedder
+  (and reranker) staging scripts download from `huggingface.co`, whose
+  file/LFS CDN is effectively unreachable from mainland China even when the API
+  host resolves — so `docker compose build` failed at the `npm run fetch:model`
+  step. The scripts now default to the drop-in **`hf-mirror.com`** mirror, and
+  accept an **`HF_ENDPOINT`** override to switch back (`HF_ENDPOINT=https://huggingface.co`).
+  Verified end-to-end: a full `fetch:model` (incl. the 34 MB ONNX) pulls cleanly
+  from the mirror.
+
+### Changes
+
+- `scripts/fetch-embed-model.mjs`, `scripts/fetch-reranker-model.mjs`: base URL
+  is now `${HF_ENDPOINT || "https://hf-mirror.com"}/<repo>/resolve/<rev>`.
+- `.github/workflows/release.yml`: the CI installer build pins
+  `HF_ENDPOINT=https://huggingface.co` — the canonical source is fast and proven
+  from GitHub's runners, so released artifacts stay off the third-party mirror;
+  only local/China Docker builds use the mirror default.
+
+### Upgrade notes
+
+- None — purely build tooling. Runtime, desktop, and server behaviour are
+  unchanged. China Docker builds now succeed out of the box; set
+  `HF_ENDPOINT=https://huggingface.co` anywhere you prefer the canonical source.
+
+---
+
 ## v0.7.6 — server setup works on Bugzilla without /rest/whoami
 
 **Tagged:** 2026-06-29
