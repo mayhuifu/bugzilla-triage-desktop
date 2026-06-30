@@ -29,7 +29,11 @@ import { fileURLToPath } from "node:url";
 const REPO = process.env.RERANK_MODEL || "Xenova/ms-marco-MiniLM-L-6-v2";
 const REV = "main";
 const DTYPE = (process.env.RERANK_DTYPE || "q8").toLowerCase();
-const BASE = `https://huggingface.co/${REPO}/resolve/${REV}`;
+// Default to the hf-mirror.com mirror (huggingface.co downloads are unreliable
+// from some networks, e.g. mainland China). Drop-in same-layout mirror; override
+// with HF_ENDPOINT to switch back, e.g. `HF_ENDPOINT=https://huggingface.co`.
+const HF_ENDPOINT = (process.env.HF_ENDPOINT || "https://hf-mirror.com").replace(/\/+$/, "");
+const BASE = `${HF_ENDPOINT}/${REPO}/resolve/${REV}`;
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dest = path.join(root, "models", ...REPO.split("/"));

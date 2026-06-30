@@ -28,7 +28,13 @@ import { fileURLToPath } from "node:url";
 const REPO = "Xenova/bge-small-en-v1.5";
 const REV = "main";
 const DTYPE = (process.env.BGE_DTYPE || "q8").toLowerCase();
-const BASE = `https://huggingface.co/${REPO}/resolve/${REV}`;
+// Default to the hf-mirror.com mirror: huggingface.co's LFS/CDN downloads are
+// unreliable from some networks (notably mainland China) even when the host
+// resolves — the Docker build then fails here. The mirror is a drop-in (same
+// /<repo>/resolve/<rev>/<file> layout) and is reachable globally. Override with
+// HF_ENDPOINT to switch back, e.g. `HF_ENDPOINT=https://huggingface.co`.
+const HF_ENDPOINT = (process.env.HF_ENDPOINT || "https://hf-mirror.com").replace(/\/+$/, "");
+const BASE = `${HF_ENDPOINT}/${REPO}/resolve/${REV}`;
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dest = path.join(root, "models", ...REPO.split("/"));

@@ -89,6 +89,12 @@ jobs:
       # The v0.5.5 hit-rank win is test-spec demotion (code-only, no model). To
       # re-enable the reranker later, switch this step to `npm run fetch:models`.
       - name: Stage embedding model (bge-small-en-v1.5)
+        # The fetch scripts default to the hf-mirror.com mirror (so China Docker
+        # builds work without config). Pin the CI installer build back to the
+        # canonical huggingface.co — it's fast + proven from GitHub's runners,
+        # and keeps the released artifact off a third-party mirror.
+        env:
+          HF_ENDPOINT: https://huggingface.co
         run: npm run fetch:model
 
       # Per-OS build target. `dist:win` etc. each chain `next build` first,
