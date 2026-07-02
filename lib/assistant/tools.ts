@@ -62,7 +62,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   {
     name: "search_specs",
     kind: "read",
-    description: "Search the bundled 3GPP spec corpus (NR + LTE) for clauses relevant to a query. Use for '3GPP/spec/standard says…' questions.",
+    description: "Search the bundled 3GPP spec corpus (NR + LTE) for clauses relevant to a query. REQUIRED for any 3GPP spec question — answer spec content ONLY from the clauses this returns, cite them, and never generate spec text from memory.",
     args: "{ query: string, limit?: number }",
   },
   {
