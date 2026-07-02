@@ -12,6 +12,53 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.10 — full-width layout, Settings crash fix, corpus-grounded Ask Zilla
+
+**Tagged:** 2026-07-02
+**Published:** 2026-07-02
+
+### Highlights
+
+- **The whole app now fills the screen.** Every page was locked to a fixed,
+  centered column (dashboard / ticket / bulk-triage at 1600px, spec at 1400px),
+  so on a wide monitor the content stranded in the middle with empty side
+  margins. The dashboard, ticket detail, 3GPP spec workbench, and bulk-triage
+  pages are now full-width with responsive gutters (`px-4 → sm:px-6 → lg:px-8`);
+  Settings and Setup widened from 768px to 1024px. Verified from 375px (no
+  horizontal overflow) up to 2560px.
+- **Settings no longer crashes on an expired session.** In server mode an
+  invalid/expired `bt_session` cookie made `/api/settings` return 401, which the
+  page rendered anyway — the corpus card then hit `undefined.trim()` and threw a
+  runtime `TypeError`. The page now detects the 401 and bounces to `/setup` to
+  re-authenticate, and `CorpusSection` defaults its manifest URL so it can never
+  crash on a missing value.
+- **Ask Zilla grounds every 3GPP spec answer in the corpus.** Spec questions now
+  MUST go through `search_specs` (the corpus RAG) and are answered only from the
+  returned clauses, with citations — never paraphrased from model memory. If the
+  corpus doesn't cover the clause, Ask Zilla says so instead of fabricating.
+
+### Changes
+
+- **Layout:** `app/page.tsx`, `app/tickets/[id]/page.tsx`,
+  `app/bulk-triage/page.tsx`, `app/spec/page.tsx` → full-width containers;
+  `app/settings/page.tsx`, `app/setup/page.tsx` → `max-w-5xl`. All use responsive
+  `px-4 / sm:px-6 / lg:px-8` gutters.
+- **Settings crash:** `app/settings/page.tsx` handles a 401 from `/api/settings`
+  (redirect to `/setup`) and defaults `corpusManifestUrl` to `""`;
+  `components/settings/CorpusSection.tsx` defaults the `manifestUrl` prop to `""`.
+- **Spec grounding:** `lib/assistant/agent.ts` adds grounding rules to the system
+  prompt; `lib/assistant/tools.ts` reinforces the `search_specs` contract.
+- **Dashboard:** a filter or bucket change now clears any active Ask Zilla result
+  set so the filter takes over (`app/page.tsx`).
+- **Server mode:** the local-CLI providers (Claude Code / Codex) are hidden on the
+  setup and settings forms — they use the host's login and can't be per-user on a
+  shared server (`app/setup/page.tsx`, `app/settings/page.tsx`).
+- **Models:** default model names bumped to `claude-opus-4-8` / `claude-sonnet-5`
+  / `claude-haiku-4-5` (`lib/llm.ts`, `lib/settings.ts`,
+  `app/api/settings/route.ts`, and the Settings / Setup pickers).
+
+---
+
 ## v0.7.9 — one-command server-side 3GPP corpus install
 
 **Tagged:** 2026-06-30
