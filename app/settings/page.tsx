@@ -45,8 +45,8 @@ interface SettingsView {
 // providers (gpt-4o, qwen2.5, deepseek-r1, …) and for proxies that rename
 // models.
 const KNOWN_MODELS = [
-  "claude-opus-4-7",
-  "claude-sonnet-4-6",
+  "claude-opus-4-8",
+  "claude-sonnet-5",
   "claude-haiku-4-5",
 ] as const;
 
@@ -70,7 +70,7 @@ export default function SettingsPage() {
   const [bugzillaInsecure, setBugzillaInsecure] = useState(true);
   const [bugzillaLogin, setBugzillaLogin] = useState("");
   const [anthropicApiKey, setAnthropicApiKey] = useState("");
-  const [defaultModel, setDefaultModel] = useState("claude-opus-4-7");
+  const [defaultModel, setDefaultModel] = useState("claude-opus-4-8");
   const [showBugzillaKey, setShowBugzillaKey] = useState(false);
   const [showAnthropicKey, setShowAnthropicKey] = useState(false);
 
@@ -90,8 +90,21 @@ export default function SettingsPage() {
   // Initial load.
   useEffect(() => {
     fetch("/api/settings")
-      .then(r => r.json())
-      .then((v: SettingsView) => {
+      .then(async r => {
+        // Server mode: an invalid or expired session 401s here even though the
+        // middleware (which only checks the bt_session cookie *exists*, not that
+        // it still resolves to a live session) let the page navigation through.
+        // Bounce to /setup to re-authenticate instead of rendering a broken form
+        // from the error body — the old code did r.json() unconditionally, so a
+        // 401 became view={error:…} and CorpusSection then crashed on an
+        // undefined manifestUrl. Leave `loading` true so the spinner shows until
+        // the redirect lands (no flash of a half-built settings page).
+        if (r.status === 401) { window.location.href = "/setup"; return null; }
+        if (!r.ok) throw new Error(`settings load failed (HTTP ${r.status})`);
+        return (await r.json()) as SettingsView;
+      })
+      .then(v => {
+        if (!v) return;                       // 401 redirect in flight
         setView(v);
         setBugzillaUrl(v.bugzillaUrl);
         setBugzillaInsecure(v.bugzillaInsecure);
@@ -100,14 +113,15 @@ export default function SettingsPage() {
         setLlmBaseUrl(v.llmBaseUrl);
         setDefaultModel(v.defaultModel);
         setThemeMode(v.themeMode);
-        setCorpusManifestUrl(v.corpusManifestUrl);
+        setCorpusManifestUrl(v.corpusManifestUrl ?? "");
         // If the stored model isn't a known Anthropic preset, drop the
         // dropdown into "custom" mode so the user sees what's persisted.
         setModelMode(
           (KNOWN_MODELS as readonly string[]).includes(v.defaultModel) ? "known" : "custom",
         );
+        setLoading(false);                    // reveal the form only on success
       })
-      .finally(() => setLoading(false));
+      .catch(() => setLoading(false));        // non-401 failure: drop spinner; view stays null so the form gate stays closed (no crash)
   }, []);
 
   // When the user flips the provider, auto-switch the model picker into
@@ -196,7 +210,7 @@ export default function SettingsPage() {
   return (
     <div className="min-h-screen">
       <header className="border-b border-bg-border bg-bg-panel/60 backdrop-blur-sm sticky top-0 z-20">
-        <div className="max-w-3xl mx-auto px-6 h-14 flex items-center justify-between">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
           <div className="flex items-center gap-6">
             <Link href="/"><Logo /></Link>
             <div className="text-xs text-slate-500">
@@ -209,7 +223,7 @@ export default function SettingsPage() {
         </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-6 py-8 space-y-6">
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
         <div>
           <h1 className="text-xl font-semibold text-slate-100">Settings</h1>
           <p className="text-sm text-slate-500 mt-0.5">
@@ -393,8 +407,15 @@ export default function SettingsPage() {
                   onChange={e => onProviderChange(e.target.value as LlmProvider)}
                 >
                   <option value="anthropic">Anthropic (default)</option>
-                  <option value="claude-cli">Claude Code CLI (use my subscription)</option>
-                  <option value="codex-cli">OpenAI Codex CLI (use my ChatGPT subscription)</option>
+                  {/* CLI providers drive THIS machine's local `claude`/`codex`
+                      login, which can't be per-user on a shared server — so
+                      they're desktop-only and hidden in multi-user mode. */}
+                  {!view?.multiUser && (
+                    <option value="claude-cli">Claude Code CLI (use my subscription)</option>
+                  )}
+                  {!view?.multiUser && (
+                    <option value="codex-cli">OpenAI Codex CLI (use my ChatGPT subscription)</option>
+                  )}
                   <option value="openai-compatible">OpenAI-compatible (custom URL)</option>
                 </select>
               </Field>
@@ -511,8 +532,8 @@ export default function SettingsPage() {
                       }
                     }}
                   >
-                    <option value="claude-opus-4-7">claude-opus-4-7 — most capable</option>
-                    <option value="claude-sonnet-4-6">claude-sonnet-4-6 — balanced</option>
+                    <option value="claude-opus-4-8">claude-opus-4-8 — most capable</option>
+                    <option value="claude-sonnet-5">claude-sonnet-5 — balanced</option>
                     <option value="claude-haiku-4-5">claude-haiku-4-5 — fastest, cheapest</option>
                     <option value="__custom__">Custom…</option>
                   </select>

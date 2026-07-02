@@ -516,12 +516,18 @@ export default function Dashboard() {
   // Bucket selection from ProductStatus cards. Clears the severity/status
   // dropdowns so they don't visually conflict with the active bucket.
   const handleSelectBucket = useCallback((b: TicketBucket | null) => {
+    setAssistantResults(null);   // status-card filter takes over from any Ask Zilla result set
     setBucket(b);
     if (b) setFilters(f => ({ ...f, severity: "", status: "" }));
   }, []);
 
   // Picking a severity/status from the dropdown clears any active bucket.
   const handleFiltersChange = useCallback((next: FilterState) => {
+    // Applying any filter takes over from an Ask Zilla result set: otherwise the
+    // table keeps showing `assistantResults` (it overrides `filtered`) and the
+    // filter looks inert. Clearing it makes the filter immediately active; the
+    // underlying filtered view is what the user now wants to browse.
+    setAssistantResults(null);
     setFilters(prev => {
       const dropdownChanged = next.severity !== prev.severity || next.status !== prev.status;
       if (dropdownChanged && bucket) setBucket(null);
@@ -591,7 +597,7 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen" style={{ paddingRight: askWidth }}>
       <header className="border-b border-bg-border bg-bg-panel/60 backdrop-blur-sm sticky top-0 z-20">
-        <div className="max-w-[1600px] mx-auto px-6 h-14 flex items-center justify-between">
+        <div className="w-full px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
           <div className="flex items-center">
             <Logo />
             <HeaderNav />
@@ -615,7 +621,7 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <main className="max-w-[1600px] mx-auto px-6 py-6 space-y-5">
+      <main className="w-full px-4 sm:px-6 lg:px-8 py-6 space-y-5">
         {/* First-launch nudge for installing the optional 3GPP RAG corpus.
             Self-hides once installed or after the user dismisses it. */}
         {!multiUser && <CorpusInstallBanner />}

@@ -100,12 +100,12 @@ export default function SetupPage() {
     <div className="min-h-screen">
       {/* ── Header ──────────────────────────────────────────────── */}
       <header className="border-b border-bg-border bg-bg-panel/60 backdrop-blur-sm sticky top-0 z-20">
-        <div className="max-w-3xl mx-auto px-6 h-14 flex items-center">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center">
           <Logo subtitle="Workspace setup" />
         </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-6 py-8 space-y-6">
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
         {/* ── Page heading ────────────────────────────────────── */}
         <div>
           <h1 className="text-xl font-semibold text-slate-100">Set up your workspace</h1>
@@ -225,12 +225,8 @@ export default function SetupPage() {
                 label="Provider"
                 hint={
                   llmProvider === "anthropic"
-                    ? "Calls api.anthropic.com directly."
-                    : llmProvider === "claude-cli"
-                      ? "Spawns the local `claude` CLI — no API key needed. Run `claude` once to sign in."
-                      : llmProvider === "codex-cli"
-                        ? "Spawns the local `codex` CLI — no API key needed. Run `codex login` to sign in."
-                        : "Calls a custom OpenAI-compatible endpoint (Azure, LiteLLM, Ollama, OpenRouter, …)."
+                    ? "Calls api.anthropic.com directly with your own key."
+                    : "Calls a custom OpenAI-compatible endpoint (Azure, LiteLLM, Ollama, OpenRouter, DeepSeek, …)."
                 }
               >
                 <select
@@ -238,9 +234,11 @@ export default function SetupPage() {
                   value={llmProvider}
                   onChange={e => onProviderChange(e.target.value as LlmProvider)}
                 >
+                  {/* CLI providers (Claude Code / Codex) are intentionally
+                      omitted on the server: they use the HOST machine's local
+                      CLI login, which can't be per-user on a shared server.
+                      They remain available in the desktop app's Settings. */}
                   <option value="anthropic">Anthropic</option>
-                  <option value="claude-cli">Claude Code CLI (use my subscription)</option>
-                  <option value="codex-cli">OpenAI Codex CLI (use my ChatGPT subscription)</option>
                   <option value="openai-compatible">OpenAI-compatible (custom URL)</option>
                 </select>
               </Field>
@@ -293,24 +291,16 @@ export default function SetupPage() {
                 </Field>
               )}
 
-              {(llmProvider === "claude-cli" || llmProvider === "codex-cli") && (
-                <div className="rounded-md border border-bg-border bg-bg-panel/50 px-3 py-2 text-xs text-slate-400">
-                  {llmProvider === "claude-cli"
-                    ? <>No API key required. Make sure <code className="text-slate-300">claude</code> is installed on PATH and you have signed in once interactively.</>
-                    : <>No API key required. Install with <code className="text-slate-300">npm i -g @openai/codex</code> and run <code className="text-slate-300">codex login</code> once.</>}
-                </div>
-              )}
-
               <Field
                 label="Default model (optional)"
-                hint="Leave blank to use the provider's default. Examples: claude-opus-4-7, gpt-4o, deepseek-r1."
+                hint="Leave blank to use the provider's default. Examples: claude-opus-4-8, gpt-4o, deepseek-r1."
               >
                 <input
                   type="text"
                   className="input"
                   value={defaultModel}
                   onChange={e => setDefaultModel(e.target.value)}
-                  placeholder="e.g. claude-sonnet-4-6, gpt-4o-mini, deepseek-r1"
+                  placeholder="e.g. claude-sonnet-5, gpt-4o-mini, deepseek-r1"
                   autoComplete="off"
                   spellCheck={false}
                 />

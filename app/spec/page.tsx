@@ -169,7 +169,7 @@ export default function SpecPage() {
   return (
     <div className="min-h-screen">
       <header className="border-b border-bg-border bg-bg-panel/60 backdrop-blur-sm sticky top-0 z-20">
-        <div className="max-w-[1100px] mx-auto px-6 h-14 flex items-center justify-between">
+        <div className="w-full px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
           <div className="flex items-center">
             <Logo />
             <HeaderNav />
@@ -180,7 +180,7 @@ export default function SpecPage() {
         </div>
       </header>
 
-      <main className="max-w-[1400px] mx-auto px-6 py-6">
+      <main className="w-full px-4 sm:px-6 lg:px-8 py-6">
         <div className="flex items-baseline justify-between gap-4 flex-wrap mb-5">
           <div>
             <h1 className="text-xl font-semibold text-slate-100">3GPP Spec Search</h1>

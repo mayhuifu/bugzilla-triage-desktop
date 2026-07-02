@@ -129,7 +129,7 @@ export default function TicketDetailPage() {
   return (
     <div className="min-h-screen">
       <header className="border-b border-bg-border bg-bg-panel/60 backdrop-blur-sm sticky top-0 z-20">
-        <div className="max-w-[1600px] mx-auto px-6 h-14 flex items-center justify-between">
+        <div className="w-full px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
           <div className="flex items-center gap-6">
             <Link href="/"><Logo /></Link>
             <div className="text-xs text-slate-500">
@@ -154,7 +154,7 @@ export default function TicketDetailPage() {
         </div>
       </header>
 
-      <main className="max-w-[1600px] mx-auto px-6 py-6">
+      <main className="w-full px-4 sm:px-6 lg:px-8 py-6">
         {loading && (
           <div className="card p-12 flex flex-col items-center gap-3">
             <Loader2 className="w-6 h-6 animate-spin text-accent" />

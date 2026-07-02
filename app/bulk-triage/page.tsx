@@ -172,7 +172,7 @@ function BulkTriageInner() {
   return (
     <div className="min-h-screen">
       <header className="border-b border-bg-border bg-bg-panel/60 backdrop-blur-sm sticky top-0 z-20">
-        <div className="max-w-[1400px] mx-auto px-6 h-14 flex items-center justify-between">
+        <div className="w-full px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
           <div className="flex items-center gap-6">
             <Link href="/"><Logo /></Link>
             <div className="text-xs text-slate-500">
@@ -205,7 +205,7 @@ function BulkTriageInner() {
         </div>
       </header>
 
-      <main className="max-w-[1400px] mx-auto px-6 py-6 space-y-4">
+      <main className="w-full px-4 sm:px-6 lg:px-8 py-6 space-y-4">
         <div className="flex items-baseline justify-between">
           <div>
             <h1 className="text-xl font-semibold text-slate-100">Bulk AI Triage</h1>

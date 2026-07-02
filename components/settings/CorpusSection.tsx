@@ -78,7 +78,10 @@ const fmtBytes = (n: number | null | undefined): string =>
 const fmtPercent = (done: number, total: number) =>
   total > 0 ? `${Math.round((done / total) * 100)}%` : "0%";
 
-export function CorpusSection({ manifestUrl, onManifestUrlChange }: Props) {
+// `manifestUrl` defaults to "" so the component can never crash on an undefined
+// prop (e.g. a caller that hasn't finished loading settings): the controlled
+// input stays controlled and `manifestUrl.trim()` below is always safe.
+export function CorpusSection({ manifestUrl = "", onManifestUrlChange }: Props) {
   const [status, setStatus] = useState<CorpusStatus | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
