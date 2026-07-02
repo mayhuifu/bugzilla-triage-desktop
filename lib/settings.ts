@@ -151,7 +151,7 @@ const EMPTY_SETTINGS: Settings = {
   llmProvider: "anthropic",
   llmBaseUrl: "",
   anthropicApiKey: "",
-  defaultModel: "claude-opus-4-7",
+  defaultModel: "claude-opus-4-8",
   themeMode: "system",
   corpusManifestUrl: DEFAULT_CORPUS_MANIFEST_URL,
   corpusVersion: "",
@@ -216,7 +216,7 @@ function envSettings(): Settings {
     anthropicApiKey:
       process.env.ANTHROPIC_API_KEY ||
       (llmProvider === "openai-compatible" ? process.env.OPENAI_API_KEY || "" : ""),
-    defaultModel: process.env.TRIAGE_MODEL || "claude-opus-4-7",
+    defaultModel: process.env.TRIAGE_MODEL || "claude-opus-4-8",
     themeMode,
     corpusManifestUrl: (process.env.CORPUS_MANIFEST_URL || DEFAULT_CORPUS_MANIFEST_URL).trim(),
     corpusVersion: process.env.CORPUS_VERSION || "",

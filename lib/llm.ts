@@ -57,7 +57,7 @@ function lookupReasonFor(reference: string): "spec_not_curated" | "clause_not_fo
 // the kind of multi-layer domain reasoning (RF physics, 3GPP specs,
 // falsifiable hypotheses) this triage prompt asks for. Callers can override
 // per-request via opts.model.
-const DEFAULT_MODEL = "claude-opus-4-7";
+const DEFAULT_MODEL = "claude-opus-4-8";
 
 // ── Image-attachment ingestion (vision-capable providers only) ────
 //

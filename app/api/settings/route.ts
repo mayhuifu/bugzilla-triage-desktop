@@ -110,7 +110,7 @@ export const POST = withUser(async (req: Request) => {
     llmProvider,
     llmBaseUrl: (body.llmBaseUrl ?? current.llmBaseUrl).trim().replace(/\/$/, ""),
     anthropicApiKey: body.anthropicApiKey?.trim() || current.anthropicApiKey,
-    defaultModel: (body.defaultModel ?? current.defaultModel).trim() || "claude-opus-4-7",
+    defaultModel: (body.defaultModel ?? current.defaultModel).trim() || "claude-opus-4-8",
     themeMode,
     // Corpus fields. corpusManifestUrl may be intentionally edited by China
     // users to a SharePoint mirror; trim/normalize but otherwise pass through.
