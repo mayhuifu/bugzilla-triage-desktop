@@ -115,15 +115,19 @@ interface StoredEnvelope {
   settings: Settings;
 }
 
-/** Default corpus manifest URL — the published rel17-v6 manifest on
- *  github.com/mayhuifu/bugzilla-triage-corpus. v6 adds TS 38.306 (UE radio
- *  access capabilities) + TS 24.501 (5GS NAS) to close the RedCap
- *  capability/eDRX coverage gap — 14,007 leaf clauses across 38 specs.
- *  Still BAAI/bge-small-en-v1.5 (384-dim), schemaVersion=3 (purely additive
- *  over v5), so the desktop's bundled query-time embedder produces vectors in
- *  the SAME space → real hybrid (BM25 ⊕ dense ⊕ RRF) retrieval. */
+/** Default corpus manifest URL — the STABLE-NAMED alias on the corpus
+ *  repo's `releases/latest`. Every corpus release (from rel17-v7 on)
+ *  uploads its manifest twice: once under the versioned name and once as
+ *  `corpus-latest.manifest.json`; GitHub's `releases/latest/download/…`
+ *  redirect then always serves the newest one. This is what lets the
+ *  Settings card's "check for update" DISCOVER new corpus releases —
+ *  the old per-tag default URLs could only ever re-fetch the release
+ *  they were pinned to, so a new tag was invisible until a desktop
+ *  release bumped the hard-coded URL (the rel17-v6 → v7 gap).
+ *  The manifest's artifact.url stays versioned, so downloads + sha256
+ *  verification are unchanged. */
 const DEFAULT_CORPUS_MANIFEST_URL =
-  "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v6/3gpp-corpus-rel17-v6-2026-06.manifest.json";
+  "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/latest/download/corpus-latest.manifest.json";
 
 /** Legacy default URLs we've shipped. When a user's saved settings.json
  *  still has one of these (i.e. they accepted the default at install
@@ -141,6 +145,9 @@ const LEGACY_DEFAULT_CORPUS_MANIFEST_URLS = new Set([
   "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v3/3gpp-corpus-rel17-v3-2026-05.manifest.json",
   "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v4/3gpp-corpus-rel17-v4-2026-05.manifest.json",
   "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v5/3gpp-corpus-rel17-v5-2026-05.manifest.json",
+  // v6 was the default through desktop v0.7.11 — remap to the stable alias
+  // so those users' "check for update" starts discovering new releases.
+  "https://github.com/mayhuifu/bugzilla-triage-corpus/releases/download/rel17-v6/3gpp-corpus-rel17-v6-2026-06.manifest.json",
 ]);
 
 const EMPTY_SETTINGS: Settings = {
