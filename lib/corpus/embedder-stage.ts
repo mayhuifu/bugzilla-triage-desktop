@@ -36,6 +36,9 @@ export interface EmbedderStageState {
   /** File currently downloading (repo-relative). */
   file?: string;
   receivedBytes?: number;
+  /** Total bytes of the CURRENT file (from Content-Length/-Range) when
+   *  known — lets progress UIs show a percentage. */
+  totalBytes?: number;
   error?: string;
   startedAt?: number;
   endedAt?: number;
@@ -50,6 +53,39 @@ export function getEmbedderStageState(): EmbedderStageState {
 
 const hfEndpoint = () =>
   (process.env.HF_ENDPOINT || "https://hf-mirror.com").replace(/\/+$/, "");
+
+/** corpus meta/manifest embeddingModel → the ONNX repo the runtime loads
+ *  (must mirror MODEL_CONFIGS in embedder-bge.ts and EMBEDDER_REPOS in
+ *  scripts/install-corpus.mjs). Null → no known repo (skip staging). */
+export function repoForEmbeddingModel(model: string): string | null {
+  return {
+    "BAAI/bge-m3": "Xenova/bge-m3",
+    "BAAI/bge-small-en-v1.5": "Xenova/bge-small-en-v1.5",
+  }[model] ?? null;
+}
+
+/** The quantisation the runtime embedder will load (BGE_DTYPE override,
+ *  q8 default) — staging must fetch the same file. */
+export function preferredDtype(): string {
+  const env = (process.env.BGE_DTYPE || "").toLowerCase();
+  return env === "fp32" || env === "fp16" || env === "q8" ? env : "q8";
+}
+
+/** True when the model is loadable from EITHER staged location the
+ *  runtime checks: the image/app-bundled <cwd>/models or the
+ *  <appData>/models staging dir. */
+export function isModelAvailable(repo: string, dtype: string): boolean {
+  const roots = [path.join(process.cwd(), "models"), path.join(appDataDir(), "models")];
+  for (const root of roots) {
+    try {
+      const dir = path.join(root, ...repo.split("/"));
+      const onnx = path.join(dir, onnxFileFor(dtype));
+      if (fs.existsSync(path.join(dir, "config.json")) &&
+          fs.existsSync(onnx) && fs.statSync(onnx).size > 1_000_000) return true;
+    } catch { /* try next root */ }
+  }
+  return false;
+}
 
 function onnxFileFor(dtype: string): string {
   return dtype === "fp32" ? "onnx/model.onnx"
@@ -87,13 +123,26 @@ export function isModelStaged(repo: string, dtype: string): boolean {
  *  process; re-kick after a failed run RESUMES the partial download).
  *  Never throws; never blocks the caller. */
 export function ensureEmbedderStaging(repo: string, dtype: string): void {
-  if (_inFlight) return;
+  void startStaging(repo, dtype);
+}
+
+/** BLOCKING staging — awaited by the corpus download flow so the Settings
+ *  card can show the model download as a visible stage the user waits on
+ *  (rather than an invisible background task). Shares the in-flight run
+ *  with ensureEmbedderStaging: whichever starts first, both observe the
+ *  same download. Resolves when staged; rejects on final failure. */
+export function stageEmbedderBlocking(repo: string, dtype: string): Promise<void> {
+  return startStaging(repo, dtype);
+}
+
+function startStaging(repo: string, dtype: string): Promise<void> {
+  if (_inFlight) return _inFlight;
   if (isModelStaged(repo, dtype)) {
     _state = { status: "ready", repo, endedAt: Date.now() };
-    return;
+    return Promise.resolve();
   }
   _state = { status: "staging", repo, startedAt: Date.now() };
-  _inFlight = stage(repo, dtype)
+  const run = stage(repo, dtype)
     .then(() => {
       _state = { status: "ready", repo, endedAt: Date.now() };
       // eslint-disable-next-line no-console
@@ -107,8 +156,15 @@ export function ensureEmbedderStaging(repo: string, dtype: string): void {
       };
       // eslint-disable-next-line no-console
       console.warn(`[corpus] embedder staging failed (will resume on next retrieval): ${_state.error}`);
+      throw err instanceof Error ? err : new Error(String(err));
     })
     .finally(() => { _inFlight = null; });
+  // Background callers ignore the rejection (state carries it); blocking
+  // callers await `run` and get it. Attach a no-op catch so an unobserved
+  // background failure can't become an unhandled rejection.
+  run.catch(() => { /* observed via _state */ });
+  _inFlight = run;
+  return run;
 }
 
 async function stage(repo: string, dtype: string): Promise<void> {
@@ -122,13 +178,19 @@ async function stage(repo: string, dtype: string): Promise<void> {
     const dest = path.join(dir, f);
     if (fs.existsSync(dest) && (!f.startsWith("onnx/") || fs.statSync(dest).size > 1_000_000)) continue;
     const partial = `${dest}.partial`;
-    _state = { ..._state, file: f, receivedBytes: fs.existsSync(partial) ? fs.statSync(partial).size : 0 };
+    _state = {
+      ..._state, file: f, totalBytes: undefined,
+      receivedBytes: fs.existsSync(partial) ? fs.statSync(partial).size : 0,
+    };
     try {
       // Big file: retry loop with Range resume; each attempt CONTINUES.
       const attempts = 8;
       for (let i = 0; ; i++) {
         try {
-          await streamToFileResumable(`${base}/${f}`, partial, b => { _state.receivedBytes = b; });
+          await streamToFileResumable(`${base}/${f}`, partial, (b, total) => {
+            _state.receivedBytes = b;
+            if (total) _state.totalBytes = total;
+          });
           break;
         } catch (err) {
           if (i >= attempts - 1) throw err;
@@ -148,7 +210,7 @@ async function stage(repo: string, dtype: string): Promise<void> {
 // machine). 206 → append; 200 → restart; 416 → already complete. Response
 // stream errors reject immediately (a mid-stream reset must not sit out
 // the stall timeout).
-function streamToFileResumable(url: string, dest: string, onProgress: (bytes: number) => void, timeoutMs = 60_000, redirects = 5): Promise<void> {
+function streamToFileResumable(url: string, dest: string, onProgress: (bytes: number, totalBytes?: number) => void, timeoutMs = 60_000, redirects = 5): Promise<void> {
   return new Promise((resolve, reject) => {
     let existing = 0;
     try { existing = fs.existsSync(dest) ? fs.statSync(dest).size : 0; } catch { /* 0 */ }
@@ -174,9 +236,15 @@ function streamToFileResumable(url: string, dest: string, onProgress: (bytes: nu
         if (s === 416) { res.resume(); if (timer) clearTimeout(timer); return resolve(); }
         if (s !== 200 && s !== 206) { res.resume(); if (timer) clearTimeout(timer); return reject(new Error(`HTTP ${s} from ${url}`)); }
         const append = s === 206 && existing > 0;
+        // Full size for progress %: Content-Range total on 206, else
+        // Content-Length (the whole file on a 200).
+        const rangeTotal = res.headers["content-range"]?.match(/\/(\d+)$/)?.[1];
+        const total = rangeTotal ? Number(rangeTotal)
+          : res.headers["content-length"] ? Number(res.headers["content-length"]) + (append ? existing : 0)
+          : undefined;
         const out = fs.createWriteStream(dest, append ? { flags: "a" } : {});
         let received = append ? existing : 0;
-        res.on("data", c => { received += c.length; onProgress(received); arm(req); });
+        res.on("data", c => { received += c.length; onProgress(received, total); arm(req); });
         res.on("error", e => { if (timer) clearTimeout(timer); reject(e); });
         res.on("aborted", () => { if (timer) clearTimeout(timer); reject(new Error("connection aborted mid-download")); });
         res.pipe(out);

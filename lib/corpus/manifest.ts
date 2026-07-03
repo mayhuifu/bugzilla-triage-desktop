@@ -43,6 +43,13 @@ export interface CorpusManifest {
   release: string;
   tag: string;
   builtAt: string;
+  /** Which embedding model built the corpus's dense vectors (rel17-v7+
+   *  manifests; e.g. "BAAI/bge-m3"). The download flow uses it to stage
+   *  the matching query embedder as part of the corpus install. Absent
+   *  on older manifests → no embedder staging step. */
+  embeddingModel?: string;
+  embeddingDim?: number;
+  embeddingDtype?: string;
   artifact: {
     filename: string;
     url: string;

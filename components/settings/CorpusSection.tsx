@@ -30,7 +30,18 @@ import {
   BookOpen, Download, RefreshCw, CheckCircle2, AlertCircle, Loader2, Globe, Trash2,
 } from "lucide-react";
 
-type ProgressStatus = "idle" | "downloading" | "verifying" | "decompressing" | "installing" | "ready" | "error";
+type ProgressStatus = "idle" | "downloading" | "verifying" | "decompressing" | "installing" | "embedder" | "ready" | "error";
+
+/** Human label per install phase. "embedder" is the one-time semantic-model
+ *  download that rel17-v7+ corpora add to the install — named explicitly so
+ *  users know what the extra ~590 MB is and that it's worth waiting for. */
+const PHASE_LABELS: Record<string, string> = {
+  downloading: "Downloading corpus",
+  verifying: "Verifying checksum",
+  decompressing: "Decompressing",
+  installing: "Installing",
+  embedder: "Downloading semantic search model (one-time)",
+};
 
 interface CorpusStatus {
   installed: boolean;
@@ -104,7 +115,8 @@ export function CorpusSection({ manifestUrl = "", onManifestUrlChange }: Props) 
         setStatus(data);
         const phase = data.progress.status;
         const fast = phase === "downloading" || phase === "verifying" ||
-                     phase === "decompressing" || phase === "installing";
+                     phase === "decompressing" || phase === "installing" ||
+                     phase === "embedder";
         timer = setTimeout(tick, fast ? 500 : 5000);
       } catch {
         // Network blip — retry slowly so we don't spam logs.
@@ -152,7 +164,8 @@ export function CorpusSection({ manifestUrl = "", onManifestUrlChange }: Props) 
   }, []);
 
   const phase = status?.progress.status ?? "idle";
-  const isActive = phase === "downloading" || phase === "verifying" || phase === "decompressing" || phase === "installing";
+  const isActive = phase === "downloading" || phase === "verifying" || phase === "decompressing"
+    || phase === "installing" || phase === "embedder";
 
   return (
     <section className="card p-5 space-y-4">
@@ -218,7 +231,7 @@ export function CorpusSection({ manifestUrl = "", onManifestUrlChange }: Props) 
         <div className="space-y-2 bg-bg-panel/40 rounded-md p-3 border border-bg-border/40">
           <div className="flex items-center gap-2 text-xs text-slate-200">
             <Loader2 className="w-3.5 h-3.5 animate-spin text-accent" />
-            <span className="capitalize">{phase}</span>
+            <span>{PHASE_LABELS[phase] ?? phase}</span>
             <span className="text-slate-500 ml-auto">
               {fmtBytes(status.progress.downloadedBytes)} / {fmtBytes(status.progress.totalBytes)} ·{" "}
               {fmtPercent(status.progress.downloadedBytes, status.progress.totalBytes)}

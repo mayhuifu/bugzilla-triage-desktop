@@ -33,11 +33,20 @@ import * as crypto from "node:crypto";
 import * as zlib from "node:zlib";
 
 import { appDataDir } from "../settings";
+import {
+  repoForEmbeddingModel, preferredDtype, isModelAvailable,
+  stageEmbedderBlocking, getEmbedderStageState,
+} from "./embedder-stage";
 import { closeCorpusDb, corpusPath } from "./store";
 import { writeLocalManifest, type CorpusManifest } from "./manifest";
 
 export interface DownloadProgress {
-  status: "idle" | "downloading" | "verifying" | "decompressing" | "installing" | "ready" | "error";
+  /** "embedder" = downloading the query-side embedding model that the new
+   *  corpus requires (rel17-v7+, one-time ~590 MB) — a visible stage of
+   *  the corpus install so users see it and wait rather than wondering
+   *  why semantic search is off. totalBytes/downloadedBytes then track
+   *  the model file instead of the corpus artifact. */
+  status: "idle" | "downloading" | "verifying" | "decompressing" | "installing" | "embedder" | "ready" | "error";
   /** Total bytes expected — taken from manifest (sizeBytesGzipped). */
   totalBytes: number;
   /** Bytes received so far during streaming. */
@@ -118,6 +127,32 @@ export async function downloadCorpus(manifest: CorpusManifest, opts: { timeoutMs
     closeCorpusDb();
     fs.renameSync(partialSqlitePath(), corpusPath());
     await writeLocalManifest(manifest);
+
+    // ── Query embedder (rel17-v7+) — a VISIBLE stage of the install ──
+    // The new corpus's semantic search needs the matching query-side model
+    // (manifest.embeddingModel). Download it here, inside the progress the
+    // user is already watching, so they know it's coming and can wait —
+    // instead of discovering keyword-only search later while an invisible
+    // background task fetches ~590 MB. Failure does NOT fail the corpus
+    // install: the corpus works keyword-only, and the retriever's
+    // fail-fast + background staging (embedder-stage.ts) retries later.
+    const repo = manifest.embeddingModel ? repoForEmbeddingModel(manifest.embeddingModel) : null;
+    if (repo && !isModelAvailable(repo, preferredDtype())) {
+      _state = { status: "embedder", totalBytes: 0, downloadedBytes: 0, tag: manifest.tag };
+      const progressPoll = setInterval(() => {
+        const st = getEmbedderStageState();
+        if (st.receivedBytes !== undefined) _state.downloadedBytes = st.receivedBytes;
+        if (st.totalBytes !== undefined) _state.totalBytes = st.totalBytes;
+      }, 300);
+      try {
+        await stageEmbedderBlocking(repo, preferredDtype());
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(`[corpus] embedder staging failed after corpus install (search stays keyword-only; retries in background):`, err);
+      } finally {
+        clearInterval(progressPoll);
+      }
+    }
 
     _state = {
       status: "ready",
