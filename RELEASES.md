@@ -12,6 +12,44 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.15 — spec search never blocks on the embedder download
+
+**Tagged:** 2026-07-03
+**Published:** 2026-07-03
+
+### Highlights
+
+- **Fixes the "any spec search hangs forever" bug on fresh rel17-v7
+  installs.** After updating to the v7 corpus, the ~570 MB bge-m3 query
+  embedder isn't on the machine yet — and the download ran INSIDE the
+  search request: every query blocked behind it, and on networks that
+  reset long connections the (non-resuming) download restarted on each
+  search and never finished. The app looked hung.
+- **Now: searches always return immediately.** When the model isn't
+  staged, the embedder fails fast, the query degrades to keyword-only
+  retrieval (still the full v2 MATCH-ladder + chunk BM25 + priors), and
+  the model downloads in the BACKGROUND with HTTP Range resume — a reset
+  continues instead of restarting. Once staged, the next search
+  automatically upgrades to hybrid (semantic) retrieval. Verified: fresh
+  v7 machine, first search returns in 0.5 s (was: never); staging stream
+  killed mid-transfer resumes with a Range request; post-staging search
+  runs `v2-hybrid`.
+- `/api/corpus/status` reports the staging state
+  (`embedderStaging: {status, file, receivedBytes}`) so the corpus card /
+  support can see why hybrid is off and how far the one-time download is.
+
+### Changes
+
+- `lib/corpus/embedder-stage.ts` (new): background Range-resume staging of
+  the embedder ONNX files into `<appData>/models/<repo>/` with progress
+  state; `HF_ENDPOINT` override (hf-mirror default).
+- `lib/corpus/embedder-bge.ts`: the pipeline NEVER downloads — loads
+  staged/bundled files or throws fast after kicking background staging
+  (Transformers.js remote download path removed).
+- `app/api/corpus/status/route.ts`: `embedderStaging` field.
+
+---
+
 ## v0.7.14 — corpus networking survives flaky routes to GitHub
 
 **Tagged:** 2026-07-03
