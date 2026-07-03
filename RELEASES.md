@@ -12,6 +12,48 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.13 — server-side rel17-v7: installer stages the bge-m3 embedder
+
+**Tagged:** 2026-07-03
+**Published:** 2026-07-03
+
+### Highlights
+
+- **The shared server fully supports the rel17-v7 corpus with one command.**
+  `scripts/install-corpus.mjs` now (a) defaults to the stable
+  `releases/latest` manifest alias — so re-running it with `--force` always
+  upgrades to the newest corpus release — and (b) reads the manifest's new
+  `embeddingModel` field and stages the matching query embedder
+  (Xenova/bge-m3 ONNX, ~590 MB) onto the persistent `/data` volume. Without
+  this, a v7 corpus on the server would silently run keyword-only retrieval
+  (the hard-fail rule): semantic/hybrid search needs the query-side model.
+- **Resume-capable downloads.** The embedder download uses HTTP Range
+  resume — an interrupted transfer (proxies that kill long connections)
+  CONTINUES on retry instead of restarting, which is exactly the failure
+  mode observed on real networks. `HF_ENDPOINT` overrides the host
+  (default `hf-mirror.com`); `--skip-embedder` opts out.
+- **Servers that installed rel17-v7 early** (before this release) just
+  re-run the installer — the corpus step no-ops, the embedder step runs.
+- The runtime now also looks in `<appData>/models/` (after the
+  image-bundled `<cwd>/models/`) so the staged model survives image
+  rebuilds, and fully-offline installs can mount a pre-staged models dir.
+
+### Changes
+
+- `scripts/install-corpus.mjs`: stable-alias default URL; embedder staging
+  step (idempotent, Range-resume, `HF_ENDPOINT` / `BGE_DTYPE` /
+  `--skip-embedder`); runs the embedder step even when the corpus install
+  is skipped.
+- `lib/corpus/embedder-bge.ts`: model lookup adds `<appData>/models/` as a
+  second staged location.
+- `deploy/README.md`: corpus section rewritten for v7 (embedder staging,
+  offline mount for the models dir).
+- corpus repo `scripts/04-publish.ts`: manifest now declares
+  `embeddingModel` / `embeddingDim` / `embeddingDtype` (backfilled onto the
+  published rel17-v7 manifests).
+
+---
+
 ## v0.7.12 — corpus update check discovers new releases
 
 **Tagged:** 2026-07-03
