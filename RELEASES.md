@@ -12,6 +12,48 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.14 — corpus networking survives flaky routes to GitHub
+
+**Tagged:** 2026-07-03
+**Published:** 2026-07-03
+
+### Highlights
+
+- **"Check for updates" retries through connection resets.** The manifest
+  fetch was a single attempt, so the intermittent `ECONNRESET` some
+  networks produce on github.com connections (reported on the Windows app)
+  failed the whole check. It now retries 4× with backoff — and when the
+  route is genuinely down, the error message points at the internal-mirror
+  override instead of a bare errno.
+- **The corpus download resumes instead of restarting.** A mid-stream
+  reset used to silently hang the progress bar until a 10-minute stall
+  timeout and then throw the ~55 MB download away. Three fixes: the
+  response-stream error is now caught immediately (the underlying bug — a
+  missing `res.on("error")` listener), the download retries with an HTTP
+  Range request that CONTINUES from the partial file, and the partial
+  survives a failed run so the next click picks up where it stopped.
+  Stall timeout tightened to 60 s of silence.
+- Verified against a deterministic flaky-network simulator: manifest
+  reset twice → third attempt OK; artifact stream killed at 31 MB →
+  immediate fail-fast → resumed via `Range: bytes=31457281-` (206) →
+  sha256 verified → installed.
+- Same response-error hardening applied to the server-side
+  `install-corpus.mjs` downloads.
+
+### Changes
+
+- `lib/corpus/manifest.ts`: `fetchRemoteManifest` retries transient
+  failures (network errors, HTTP 429/5xx) with backoff + jitter;
+  actionable final error message.
+- `lib/corpus/downloader.ts`: `streamToFile` gains Range resume +
+  response-stream error handling; `downloadCorpus` wraps the stream in a
+  5-attempt resume loop, keeps the partial `.gz` on network failures, and
+  fails a dead connection after 60 s of silence.
+- `scripts/install-corpus.mjs`: response-stream error listeners on both
+  download helpers.
+
+---
+
 ## v0.7.13 — server-side rel17-v7: installer stages the bge-m3 embedder
 
 **Tagged:** 2026-07-03
