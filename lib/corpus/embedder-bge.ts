@@ -42,6 +42,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { CorpusEmbedder } from "./embedder";
 import { setCorpusEmbedder, getCorpusEmbedder } from "./embedder";
+import { ensureEmbedderStaging, getEmbedderStageState } from "./embedder-stage";
 import { appDataDir } from "../paths";
 
 interface BgeModelConfig {
@@ -101,12 +102,6 @@ function bundledModelRoot(repo: string): string | null {
   return null;
 }
 
-/** Where remote-downloaded models cache. App-data (NOT node_modules —
- *  read-only in packaged builds) so the bge-m3 download survives app
- *  updates and never re-fetches. */
-function modelCacheDir(): string {
-  return path.join(appDataDir(), "models-cache");
-}
 
 // Transformers.js pipeline type is loaded dynamically (ESM-only package),
 // so we keep a loose type here rather than importing it at module scope.
@@ -126,13 +121,34 @@ class BgeEmbedder implements CorpusEmbedder {
   }
 
   /** Lazily construct the feature-extraction pipeline exactly once. The
-   *  heavy ONNX init (and, for bge-m3, the one-time ~570 MB download)
-   *  happens on the FIRST embed() call, guarded by a single in-flight
-   *  promise so concurrent first calls don't load the model twice. */
+   *  heavy ONNX init happens on the FIRST embed() call, guarded by a
+   *  single in-flight promise so concurrent first calls don't load the
+   *  model twice.
+   *
+   *  NEVER downloads. When no staged/bundled model dir exists this kicks
+   *  BACKGROUND staging (embedder-stage.ts: Range-resume, survives resets)
+   *  and throws immediately — the retriever catches, degrades the query
+   *  to FTS-only, and the search RETURNS instead of blocking behind a
+   *  ~570 MB in-request download (which hung every /spec search on fresh
+   *  v7 installs — the download restarted per query on flaky networks and
+   *  never finished). Once staging completes, the next embed() finds the
+   *  files and hybrid activates. */
   private pipe(): Promise<FeatureExtractor> {
     if (this._pipe) return this._pipe;
     this._pipe = (async () => {
       const dtype = dtypeFor(this.cfg);
+      const root = bundledModelRoot(this.cfg.repo);
+      if (!root) {
+        ensureEmbedderStaging(this.cfg.repo, dtype);
+        const st = getEmbedderStageState();
+        const progress = st.status === "staging" && st.receivedBytes
+          ? ` (${(st.receivedBytes / 1e6).toFixed(0)} MB so far)`
+          : "";
+        throw new Error(
+          `query embedder ${this.cfg.repo} is not staged yet — background download ${st.status}${progress}; ` +
+          `search runs keyword-only until it completes`,
+        );
+      }
       // Dynamic import — @huggingface/transformers is ESM-only and is
       // externalized in next.config.mjs (loaded from the unpacked
       // standalone node_modules, never webpack-bundled).
@@ -142,7 +158,6 @@ class BgeEmbedder implements CorpusEmbedder {
           allowRemoteModels: boolean;
           localModelPath: string;
           cacheDir: string;
-          remoteHost: string;
           backends: { onnx: Record<string, unknown> };
         };
       };
@@ -150,35 +165,17 @@ class BgeEmbedder implements CorpusEmbedder {
       // in-process (v6→v7) the last-registered embedder's env wins —
       // fine, because the retriever only ever uses the embedder that
       // matches the CURRENT corpus.
-      const root = bundledModelRoot(this.cfg.repo);
-      if (root) {
-        // Packaged / pre-staged: offline, load from disk only.
-        tf.env.localModelPath = root;
-        tf.env.cacheDir = root;
-        tf.env.allowRemoteModels = false;
-        // eslint-disable-next-line no-console
-        console.info(`[corpus] bge embedder: loading ${this.cfg.repo} (${dtype}) from bundled ${root}`);
-      } else {
-        // Lazy-download: cache under app data, host overridable. Default
-        // to hf-mirror.com (same rationale + env contract as
-        // scripts/fetch-embed-model.mjs — huggingface.co LFS is unreliable
-        // from some networks).
-        tf.env.allowRemoteModels = true;
-        tf.env.remoteHost = (process.env.HF_ENDPOINT || "https://hf-mirror.com").replace(/\/+$/, "");
-        tf.env.cacheDir = modelCacheDir();
-        try { fs.mkdirSync(tf.env.cacheDir, { recursive: true }); } catch { /* best-effort */ }
-        // eslint-disable-next-line no-console
-        console.info(
-          `[corpus] bge embedder: no bundled dir for ${this.cfg.repo}; ` +
-          `downloading (${dtype}) from ${tf.env.remoteHost} → cache ${tf.env.cacheDir} ` +
-          `(one-time; bge-m3 q8 is ~570 MB)`,
-        );
-      }
+      tf.env.localModelPath = root;
+      tf.env.cacheDir = root;
+      tf.env.allowRemoteModels = false;
+      // eslint-disable-next-line no-console
+      console.info(`[corpus] bge embedder: loading ${this.cfg.repo} (${dtype}) from staged ${root}`);
       const extractor = await tf.pipeline("feature-extraction", this.cfg.repo, { dtype });
       return extractor;
     })();
-    // If the first load fails, clear the cached promise so a later call
-    // can retry (e.g. network came back after a transient download error).
+    // If the load fails (model unstaged / staged files corrupt), clear the
+    // cached promise so a later call re-checks — staging may have finished
+    // in the meantime.
     this._pipe.catch(() => { this._pipe = null; });
     return this._pipe;
   }

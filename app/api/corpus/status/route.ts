@@ -4,6 +4,7 @@ import { getDownloadProgress } from "@/lib/corpus/downloader";
 import { getCorpusMeta, corpusEngineError } from "@/lib/corpus/store";
 import { activeRetrieverPath } from "@/lib/corpus/retriever";
 import { activeQueryEmbedderModelId, BGE_EMBEDDER_MODEL_ID } from "@/lib/corpus/embedder-bge";
+import { getEmbedderStageState } from "@/lib/corpus/embedder-stage";
 import { RERANKER_MODEL_ID } from "@/lib/corpus/reranker-ce";
 import { loadSettings } from "@/lib/settings";
 import { withUser } from "@/lib/users/with-user";
@@ -82,6 +83,10 @@ export const GET = withUser(async (req: Request) => {
     // for v5/v6, bge-m3 for v7+). Falls back to the bundled default before the
     // first retrieval registers one.
     queryEmbedderModel: activeQueryEmbedderModelId() ?? BGE_EMBEDDER_MODEL_ID,
+    // Background embedder staging (v7 first run): while "staging", searches
+    // return keyword-only results and this explains why + how far along the
+    // one-time ~590 MB model download is. "ready"/"idle" → nothing pending.
+    embedderStaging: getEmbedderStageState(),
   };
 
   if (!checkRemote) {
