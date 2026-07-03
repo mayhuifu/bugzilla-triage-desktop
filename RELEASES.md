@@ -12,6 +12,50 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.16 — embedder download is a visible stage of the corpus install
+
+**Tagged:** 2026-07-03
+**Published:** 2026-07-03
+
+### Highlights
+
+- **The semantic-model download is now part of the corpus download the
+  user watches.** On rel17-v7+ corpora, after the corpus installs, the
+  Settings card's progress bar moves into a labelled
+  "Downloading semantic search model (one-time)" stage (~590 MB, with
+  byte counts + percentage from the server's Content-Length) — so people
+  KNOW it's downloading and can wait, instead of discovering later that
+  semantic search was quietly off while a background task fetched the
+  model. Driven by the manifest's `embeddingModel` field; corpora without
+  it (pre-v7) skip the stage entirely.
+- If the model stage fails (offline, blocked route), the corpus install
+  still succeeds — search runs keyword-only and v0.7.15's fail-fast +
+  background staging picks the download up later, resuming from the
+  partial file.
+- Server side unchanged: `install-corpus.mjs` has downloaded the embedder
+  as a visible part of the corpus install since v0.7.13.
+- Verified end-to-end on a simulated fresh machine: one download click →
+  phases `downloading → verifying → decompressing → installing →
+  embedder (bytes/total) → ready`, and the first search after `ready`
+  runs `v2-hybrid` immediately (no waiting on an invisible download).
+
+### Changes
+
+- `lib/corpus/downloader.ts`: new `embedder` status in DownloadProgress;
+  after installing the corpus, awaits `stageEmbedderBlocking()` with
+  progress bridged into the download state (model failure ≠ install
+  failure).
+- `lib/corpus/embedder-stage.ts`: blocking staging entry point sharing
+  the in-flight run with background staging; per-file totalBytes from
+  Content-Length/Content-Range; `repoForEmbeddingModel` /
+  `preferredDtype` / `isModelAvailable` helpers.
+- `lib/corpus/manifest.ts`: CorpusManifest carries optional
+  `embeddingModel` / `embeddingDim` / `embeddingDtype`.
+- `components/settings/CorpusSection.tsx`: labelled phases (incl. the
+  one-time semantic-model stage) instead of raw status words.
+
+---
+
 ## v0.7.15 — spec search never blocks on the embedder download
 
 **Tagged:** 2026-07-03
