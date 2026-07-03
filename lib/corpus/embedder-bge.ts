@@ -2,84 +2,103 @@
 // lib/corpus/embedder-bge.ts — the bundled query-time embedder that
 // unlocks hybrid (BM25 ⊕ dense ⊕ RRF) retrieval on the desktop.
 //
-// Corpus rel17-v5 is built with BAAI/bge-small-en-v1.5 (384-dim) at
-// build time (recorded in meta.embeddingModel). To do hybrid retrieval
-// at query time we need a vector for the bug/search text in the SAME
-// embedding space — i.e. produced by the same model. This module is
-// that query-side counterpart.
+// The corpus records which embedding model built its vectors in
+// meta.embeddingModel; the query-side embedder MUST be the same model
+// or cosine similarities are meaningless. Two corpus generations exist:
+//
+//   rel17-v5/v6 → BAAI/bge-small-en-v1.5 (384-dim)  — bundled (~22 MB q8)
+//   rel17-v7+   → BAAI/bge-m3           (1024-dim) — lazy-downloaded
+//                 (~570 MB q8 int8 ONNX; too heavy to bundle in the
+//                 installer — cached under the app-data dir on first use,
+//                 per docs/desktop-port-retriever-v2.md §2)
+//
+// Registration is corpus-aware: ensureBgeEmbedderRegistered(corpusModel)
+// picks the config matching the INSTALLED corpus and (re-)registers when
+// the corpus generation changes in-process (e.g. a v6→v7 corpus update).
+// Unknown corpus models register nothing → the retriever's hard-fail rule
+// keeps retrieval FTS-only rather than silently mis-ranking.
 //
 // Implementation: @huggingface/transformers (Transformers.js v4) running
-// the ONNX export of bge-small-en-v1.5. Transformers.js bundles BERT
-// WordPiece tokenisation + ONNX Runtime + model loading in one package,
-// so this is a single dependency rather than raw onnxruntime-node + a
-// hand-rolled tokenizer.
+// the ONNX export. Both bge models want CLS pooling + L2 normalisation
+// (bge-m3 dense head included — no instruction prefix, per the handoff).
 //
-// Loading strategy (the packaging-risk surface — see PLAN-v0.5 Phase 0):
-//   - PACKAGED build: the model files are bundled under
-//     <cwd>/models/<MODEL_REPO>/ via electron-builder extraResources.
-//     env.localModelPath points there and env.allowRemoteModels=false so
-//     the app NEVER hits the network for the model.
-//   - DEV (`npm run dev`): if the bundled dir is absent we allow remote
-//     download from the HF hub (Transformers.js caches it locally), so a
-//     developer can test hybrid without pre-staging the model.
+// Loading strategy per model:
+//   - PACKAGED/pre-staged: model files under <cwd>/models/<repo>/ via
+//     electron-builder extraResources (scripts/fetch-embed-model.mjs).
+//     env.localModelPath points there; no network.
+//   - Otherwise: remote download allowed. Host defaults to hf-mirror.com
+//     (drop-in HF mirror; huggingface.co LFS is unreliable from some
+//     networks — same rationale as fetch-embed-model.mjs). Override with
+//     HF_ENDPOINT. Downloads cache under <appData>/models-cache so the
+//     ~570 MB bge-m3 fetch happens ONCE per machine, not per session.
 //
 // Everything here is best-effort: any failure leaves the embedder
 // unregistered (or makes embed() throw, which the retriever catches and
-// degrades to BM25). Hybrid is an enhancement, never a hard dependency.
+// degrades to FTS-only). Hybrid is an enhancement, never a hard dependency.
 // ─────────────────────────────────────────────────────────────────
 
 import "server-only";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { CorpusEmbedder } from "./embedder";
-import { setCorpusEmbedder } from "./embedder";
-// NOTE: deliberately do NOT import ./store here. instrumentation.ts imports
-// this module, and Next.js compiles instrumentation for the edge runtime as
-// well as node — a static import of store.ts would drag better-sqlite3 (→
-// `bindings` → `fs`) into the edge bundle, which has no `fs`, and the build
-// fails. The corpus-vs-embedder model comparison is logged elsewhere: the
-// retriever's decidePath() warns per-query on mismatch, and
-// /api/corpus/status reports hybridActive to the UI (both run in node-only
-// route handlers where store.ts is safe to import).
+import { setCorpusEmbedder, getCorpusEmbedder } from "./embedder";
+import { appDataDir } from "../paths";
 
-// ── Model identity ────────────────────────────────────────────────
-//
-// MODEL_ID is the string matched against the corpus's meta.embeddingModel
-// by the retriever's decidePath(). It MUST equal what the corpus build
-// pipeline records — the corpus is built by sentence-transformers loading
-// "BAAI/bge-small-en-v1.5", so that's the identity we claim.
-//
-// MODEL_REPO is the folder/repo Transformers.js actually loads. The ONNX
-// export lives under the Xenova namespace; it's the same weights as the
-// BAAI checkpoint, so the produced vectors share the embedding space.
-// (Decoupling the two lets the on-disk folder differ from the corpus's
-// identity string without breaking the modelId match.)
-const MODEL_ID = "BAAI/bge-small-en-v1.5";
-const MODEL_REPO = "Xenova/bge-small-en-v1.5";
-const EMBED_DIM = 384;
+interface BgeModelConfig {
+  /** Identity matched against the corpus's meta.embeddingModel. */
+  modelId: string;
+  /** HF repo Transformers.js actually loads (ONNX export namespace —
+   *  same weights as the BAAI checkpoint, same embedding space). */
+  repo: string;
+  dim: number;
+  defaultDtype: "q8" | "fp16" | "fp32";
+}
 
-// Quantisation of the bundled ONNX. "q8" keeps the bundle ~22 MB (the
-// PLAN-v0.5 size budget); "fp32" (~130 MB) maximises fidelity against the
-// fp32 corpus vectors. Overridable so the eval gate (corpus Phase 1) can
-// pick whichever gives the better measured lift.
-const DTYPE = (process.env.BGE_DTYPE || "q8") as "q8" | "fp16" | "fp32";
+const MODEL_CONFIGS: Record<string, BgeModelConfig> = {
+  "BAAI/bge-small-en-v1.5": {
+    modelId: "BAAI/bge-small-en-v1.5",
+    repo: "Xenova/bge-small-en-v1.5",
+    dim: 384,
+    defaultDtype: "q8",
+  },
+  "BAAI/bge-m3": {
+    modelId: "BAAI/bge-m3",
+    repo: "Xenova/bge-m3",
+    dim: 1024,
+    defaultDtype: "q8", // int8-quantized ONNX ≈ 570 MB (handoff §2 option 1)
+  },
+};
 
-/** Resolve the bundled-model directory if it has been staged. In the
- *  packaged app the Next.js standalone server runs with
+/** Corpora older than rel17-v5 (or a missing meta row) are assumed
+ *  bge-small — the only model desktop builds ever shipped before v7. */
+const LEGACY_DEFAULT_MODEL = "BAAI/bge-small-en-v1.5";
+
+// Quantisation override shared by both models: BGE_DTYPE=fp32 maximises
+// fidelity against the fp16 corpus vectors at ~4× the download.
+function dtypeFor(cfg: BgeModelConfig): "q8" | "fp16" | "fp32" {
+  const env = (process.env.BGE_DTYPE || "").toLowerCase();
+  return env === "fp32" || env === "fp16" || env === "q8" ? env : cfg.defaultDtype;
+}
+
+/** Resolve the bundled-model directory if it has been staged for `repo`.
+ *  In the packaged app the Next.js standalone server runs with
  *  cwd = <resources>/app/.next/standalone and electron-builder copies the
- *  model to <cwd>/models/<MODEL_REPO>/. We only check that the model's
- *  config.json exists at the expected localModelPath layout — that's the
- *  exact file the runtime reads first, so its presence is the reliable
- *  "model is staged" signal. Returns null when unstaged (dev, or a build
- *  where fetch-embed-model.mjs wasn't run) so the caller allows a remote
- *  download instead. */
-function bundledModelRoot(): string | null {
+ *  model to <cwd>/models/<repo>/. config.json is the first file the
+ *  runtime reads, so its presence is the reliable "staged" signal. */
+function bundledModelRoot(repo: string): string | null {
   const root = path.join(process.cwd(), "models");
-  const cfg = path.join(root, ...MODEL_REPO.split("/"), "config.json");
+  const cfg = path.join(root, ...repo.split("/"), "config.json");
   try {
     if (fs.existsSync(cfg)) return root;
   } catch { /* fall through to remote */ }
   return null;
+}
+
+/** Where remote-downloaded models cache. App-data (NOT node_modules —
+ *  read-only in packaged builds) so the bge-m3 download survives app
+ *  updates and never re-fetches. */
+function modelCacheDir(): string {
+  return path.join(appDataDir(), "models-cache");
 }
 
 // Transformers.js pipeline type is loaded dynamically (ESM-only package),
@@ -90,16 +109,23 @@ type FeatureExtractor = (
 ) => Promise<{ data: ArrayLike<number> }>;
 
 class BgeEmbedder implements CorpusEmbedder {
-  readonly modelId = MODEL_ID;
+  readonly modelId: string;
+  private readonly cfg: BgeModelConfig;
   private _pipe: Promise<FeatureExtractor> | null = null;
 
+  constructor(cfg: BgeModelConfig) {
+    this.cfg = cfg;
+    this.modelId = cfg.modelId;
+  }
+
   /** Lazily construct the feature-extraction pipeline exactly once. The
-   *  heavy ONNX init happens on the FIRST embed() call (not at app boot),
-   *  guarded by a single in-flight promise so concurrent first calls
-   *  don't load the model twice. */
+   *  heavy ONNX init (and, for bge-m3, the one-time ~570 MB download)
+   *  happens on the FIRST embed() call, guarded by a single in-flight
+   *  promise so concurrent first calls don't load the model twice. */
   private pipe(): Promise<FeatureExtractor> {
     if (this._pipe) return this._pipe;
     this._pipe = (async () => {
+      const dtype = dtypeFor(this.cfg);
       // Dynamic import — @huggingface/transformers is ESM-only and is
       // externalized in next.config.mjs (loaded from the unpacked
       // standalone node_modules, never webpack-bundled).
@@ -109,80 +135,132 @@ class BgeEmbedder implements CorpusEmbedder {
           allowRemoteModels: boolean;
           localModelPath: string;
           cacheDir: string;
+          remoteHost: string;
           backends: { onnx: Record<string, unknown> };
         };
       };
-      const root = bundledModelRoot();
+      // NOTE: tf.env is module-global. If the corpus generation flips
+      // in-process (v6→v7) the last-registered embedder's env wins —
+      // fine, because the retriever only ever uses the embedder that
+      // matches the CURRENT corpus.
+      const root = bundledModelRoot(this.cfg.repo);
       if (root) {
-        // Packaged / pre-staged: offline, load from disk only. Point both
-        // localModelPath (where local files are read) and cacheDir (no
-        // remote, but harmless to align) at the bundled dir.
+        // Packaged / pre-staged: offline, load from disk only.
         tf.env.localModelPath = root;
         tf.env.cacheDir = root;
         tf.env.allowRemoteModels = false;
         // eslint-disable-next-line no-console
-        console.info(`[corpus] bge embedder: loading ${MODEL_REPO} (${DTYPE}) from bundled ${root}`);
+        console.info(`[corpus] bge embedder: loading ${this.cfg.repo} (${dtype}) from bundled ${root}`);
       } else {
-        // Dev fallback: let Transformers.js download + cache from the hub.
+        // Lazy-download: cache under app data, host overridable. Default
+        // to hf-mirror.com (same rationale + env contract as
+        // scripts/fetch-embed-model.mjs — huggingface.co LFS is unreliable
+        // from some networks).
+        tf.env.allowRemoteModels = true;
+        tf.env.remoteHost = (process.env.HF_ENDPOINT || "https://hf-mirror.com").replace(/\/+$/, "");
+        tf.env.cacheDir = modelCacheDir();
+        try { fs.mkdirSync(tf.env.cacheDir, { recursive: true }); } catch { /* best-effort */ }
         // eslint-disable-next-line no-console
-        console.info(`[corpus] bge embedder: no bundled model dir; allowing remote download of ${MODEL_REPO} (${DTYPE})`);
+        console.info(
+          `[corpus] bge embedder: no bundled dir for ${this.cfg.repo}; ` +
+          `downloading (${dtype}) from ${tf.env.remoteHost} → cache ${tf.env.cacheDir} ` +
+          `(one-time; bge-m3 q8 is ~570 MB)`,
+        );
       }
-      const extractor = await tf.pipeline("feature-extraction", MODEL_REPO, { dtype: DTYPE });
+      const extractor = await tf.pipeline("feature-extraction", this.cfg.repo, { dtype });
       return extractor;
     })();
     // If the first load fails, clear the cached promise so a later call
-    // can retry (e.g. corpus downloaded after a transient model-load error).
+    // can retry (e.g. network came back after a transient download error).
     this._pipe.catch(() => { this._pipe = null; });
     return this._pipe;
   }
 
   async embed(text: string): Promise<Float32Array> {
     const extractor = await this.pipe();
-    // bge wants CLS pooling + L2 normalisation to produce the unit vectors
-    // cosine similarity expects. normalize:true makes ‖v‖₂ ≈ 1.
+    // Both bge models want CLS pooling + L2 normalisation (unit vectors —
+    // required because sqlite-vec's L2 distance rank-orders identically to
+    // cosine ONLY for normalized vectors). bge-m3 dense queries take no
+    // instruction prefix (handoff §2).
     const out = await extractor(text, { pooling: "cls", normalize: true });
     const vec = out.data instanceof Float32Array ? out.data : new Float32Array(out.data);
-    if (vec.length !== EMBED_DIM) {
-      // Wrong model bundled / corpus-dim mismatch. Throw so the retriever's
-      // hybridRetrieve catch falls back to BM25 (and logs) instead of
-      // pushing a wrong-length blob into sqlite-vec (which would error or,
-      // worse, silently mis-rank).
-      throw new Error(`bge embedder produced ${vec.length} dims, expected ${EMBED_DIM}`);
+    if (vec.length !== this.cfg.dim) {
+      // Wrong model staged / corpus-dim mismatch. Throw so the retriever's
+      // catch falls back to FTS-only (and logs) instead of pushing a
+      // wrong-length blob into sqlite-vec (which would error or, worse,
+      // silently mis-rank).
+      throw new Error(`bge embedder produced ${vec.length} dims, expected ${this.cfg.dim} (${this.modelId})`);
     }
     // Defensive copy — out.data may be a view into a reused buffer.
     return new Float32Array(vec);
   }
 }
 
-let _registered = false;
+let _registeredModelId: string | null = null;
+let _warnedUnknownModel: string | null = null;
 
-/** Register the bundled bge embedder so the retriever's hybrid path
- *  activates when the open corpus's meta.embeddingModel matches MODEL_ID.
+/** Register the query embedder matching the installed corpus so the
+ *  retriever's hybrid path activates when meta.embeddingModel matches.
  *
- *  Idempotent, synchronous, and best-effort — a failure NEVER throws into
- *  the retrieval hot path (the app keeps working BM25-only). Constructing
- *  the embedder does NOT load the ~22 MB ONNX model; that's deferred to the
- *  first embed() call.
+ *  Idempotent per corpus model, synchronous, and best-effort — a failure
+ *  NEVER throws into the retrieval hot path (the app keeps working
+ *  FTS-only). Constructing the embedder does NOT load the ONNX model;
+ *  that's deferred to the first embed() call.
+ *
+ *  `corpusModel` is the open corpus's meta.embeddingModel (null/undefined
+ *  → legacy bge-small default). An unknown model unregisters the embedder
+ *  entirely — the hard-fail rule from the handoff: never run dense
+ *  retrieval with a mismatched embedding space.
  *
  *  Called lazily from the retriever's decidePath() rather than a Next.js
- *  instrumentation hook on purpose: instrumentation.ts is compiled for the
- *  edge runtime too, and this module's `node:fs` / onnxruntime-node deps
- *  can't resolve there. The retriever is node-only (it imports better-
- *  sqlite3), so registering from it keeps everything on the node side. */
-export function ensureBgeEmbedderRegistered(): void {
-  if (_registered) return;
-  _registered = true; // set first so a throw can't cause a retry loop
+ *  instrumentation hook on purpose: instrumentation is compiled for the
+ *  edge runtime too, where this module's node:fs / onnxruntime deps can't
+ *  resolve. The retriever is node-only, so registering from it keeps
+ *  everything on the node side. */
+export function ensureBgeEmbedderRegistered(corpusModel?: string | null): void {
+  const wanted = corpusModel ?? LEGACY_DEFAULT_MODEL;
+  const cfg = MODEL_CONFIGS[wanted];
+  if (!cfg) {
+    // Corpus built with a model this desktop doesn't ship. Unregister so
+    // the retriever's model-match gate disables dense paths (FTS-only).
+    if (_registeredModelId !== null) {
+      setCorpusEmbedder(null);
+      _registeredModelId = null;
+    }
+    if (_warnedUnknownModel !== wanted) {
+      _warnedUnknownModel = wanted;
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[corpus] corpus was built with embedding model '${wanted}', which this build has no query embedder for — ` +
+        `dense retrieval DISABLED (FTS-only). Update the app to a version that bundles it.`,
+      );
+    }
+    return;
+  }
+  if (_registeredModelId === cfg.modelId && getCorpusEmbedder()) return;
   try {
-    setCorpusEmbedder(new BgeEmbedder());
+    setCorpusEmbedder(new BgeEmbedder(cfg));
+    _registeredModelId = cfg.modelId;
     // eslint-disable-next-line no-console
-    console.info(`[corpus] bge embedder registered (modelId=${MODEL_ID}, dtype=${DTYPE}). Hybrid engages when the installed corpus's meta.embeddingModel matches; otherwise decidePath() logs a one-line BM25-fallback notice. /api/corpus/status reports the live hybridActive state.`);
+    console.info(
+      `[corpus] bge embedder registered (modelId=${cfg.modelId}, dim=${cfg.dim}, dtype=${dtypeFor(cfg)}). ` +
+      `Hybrid engages when the installed corpus's meta.embeddingModel matches; /api/corpus/status reports the live state.`,
+    );
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.error("[corpus] bge embedder registration failed; retrieval stays BM25-only:", err);
+    console.error("[corpus] bge embedder registration failed; retrieval stays FTS-only:", err);
   }
 }
 
-/** The model identity this embedder claims — exported so /api/corpus/status
- *  can report it alongside the corpus's meta.embeddingModel for the UI's
- *  "hybrid active vs fallback" indicator. */
-export const BGE_EMBEDDER_MODEL_ID = MODEL_ID;
+/** The model identity the ACTIVE embedder claims (null when none is
+ *  registered — e.g. unknown corpus model). Exported so
+ *  /api/corpus/status can report it alongside the corpus's
+ *  meta.embeddingModel for the UI's "hybrid active vs fallback"
+ *  indicator. */
+export function activeQueryEmbedderModelId(): string | null {
+  return getCorpusEmbedder()?.modelId ?? _registeredModelId;
+}
+
+/** Legacy constant — the model the DEFAULT (bundled) embedder claims.
+ *  Prefer activeQueryEmbedderModelId() for live reporting. */
+export const BGE_EMBEDDER_MODEL_ID = LEGACY_DEFAULT_MODEL;

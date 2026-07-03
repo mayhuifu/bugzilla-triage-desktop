@@ -1,0 +1,476 @@
+// ─────────────────────────────────────────────────────────────────
+// lib/corpus/retriever-v2.ts — hybrid retriever v2 over a rel17-v7+
+// corpus. Port of bugzilla-triage-corpus scripts/retriever-v2.ts (the
+// validated reference implementation — see that repo's
+// docs/desktop-port-retriever-v2.md for the contract).
+//
+// Pipeline per query:
+//   1. concept-group MATCH ladder (phrase → AND → AND-informative →
+//      OR-floor) with acronym expansion from the corpus `acronyms`
+//      table, run over BOTH clauses_fts (title/aux/citation signals)
+//      and chunk_fts (length-fair text BM25 over ~1600-char windows)
+//   2. chunk-level dense retrieval (chunk_vec, bge-m3) with
+//      per-clause max-pool; falls back to clauses_vec. SKIPPED when
+//      the caller has no query embedding (embedder missing/mismatch —
+//      the handoff's hard-fail rule → FTS-only).
+//   3. weighted RRF (k=5) with OR-floor discount + technology/
+//      materiality priors (LTE / test-material / RF)
+//   4. citation-pull: same-spec "clause N.N" refs in query-relevant
+//      sentences of the top hits, hub-IDF damped, chapter-local
+//      bonus, inserted from rank 5. Runs AFTER fusion — and, when the
+//      LLM rerank is on, the caller re-applies it AFTER rerank
+//      (cited clauses share no vocabulary with the query; rerankers
+//      bury them) via applyCitationPull().
+//
+// Desktop deltas vs the reference:
+//   - candidates() exposes the UNION of the three lists (with each
+//     candidate's best-matching chunk window) so the AI-rerank toggle
+//     can rerank the full pool rather than the fused top-K.
+//   - indegree cache lives next to the corpus file (app-data, writable).
+//   - engine constructed once per db handle (see retriever.ts WeakMap).
+// ─────────────────────────────────────────────────────────────────
+
+import "server-only";
+import * as path from "node:path";
+import * as fsSync from "node:fs";
+import type Database from "better-sqlite3";
+
+export interface RetrieverV2Opts {
+  rrfK?: number;            // default 5
+  candidates?: number;      // per source, default 50
+  weights?: number[];       // bm25 col weights (citation,title,parent_title,path,text[,aux])
+  expand?: boolean;         // acronym expansion, default true
+  lteW?: number;            // LTE (36.x) prior, default 0.3
+  testW?: number;           // test-material prior, default 0.5
+  rfW?: number;             // RF spec prior, default 0.6
+  floorW?: number;          // OR-floor discount, default 0.35
+  vecZ?: number;            // vec z-score bonus, default 0.5
+  listW?: { fts: number; cfts: number; vec: number };
+  maxPull?: number;         // citation pulls, default 2
+  indegreeCachePath?: string;
+}
+
+/** One entry of the union candidate pool handed to the LLM reranker. */
+export interface V2Candidate {
+  id: string;
+  /** Best-matching ~1600-char chunk window for this clause (chunk_fts
+   *  BM25 against the query's OR-floor expression), or null when the
+   *  clause has no chunk hit (definitional clauses are excluded from
+   *  chunk_fts; vec-only candidates may not match lexically). Callers
+   *  fall back to the clause head. */
+  bestChunk: string | null;
+  /** 1-based position in the fused (pre-rerank) order, or null if the
+   *  candidate came from a source list but didn't make the fused top-50. */
+  fusedRank: number | null;
+}
+
+const STOPWORDS = new Set([
+  "the","a","an","and","or","of","to","in","on","for","is","are","was","were",
+  "be","been","by","with","as","at","that","this","it","its","from","into",
+  "than","then","such","not","no","do","does","did","has","have","had",
+]);
+const GENERIC_TOKENS = new Set([
+  "one","separate","same","parallel","case",
+  "transmission","transmissions","resource","resources","procedure",
+  "overlapping","overlap","simultaneous","cross","channel","channels",
+  "uplink","downlink","slot","symbol","configured","support","supported",
+]);
+const COUNT_WORDS = new Set(["two", "three", "dual", "multiple"]);
+
+export function tokenizeV2(s: string): string[] {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9_\- ]+/g, " ")
+    .split(/\s+/)
+    .filter(t => t.length >= 2 && !STOPWORDS.has(t));
+}
+function buildBm25Match(query: string): string {
+  const tokens = Array.from(new Set(tokenizeV2(query))).slice(0, 40);
+  if (tokens.length === 0) return '""';
+  return tokens.map(t => `"${t.replace(/"/g, '""')}"`).join(" OR ");
+}
+function quote(s: string): string { return `"${s.replace(/"/g, '""')}"`; }
+
+interface AcronymGlossary {
+  byToken: Map<string, string[]>;
+  byExpansionWords: Array<{ words: string[]; acronym: string }>;
+}
+function loadGlossary(db: Database.Database): AcronymGlossary {
+  const byToken = new Map<string, string[]>();
+  const byExpansionWords: AcronymGlossary["byExpansionWords"] = [];
+  try {
+    const rows = db.prepare("SELECT acronym, expansion, aliases FROM acronyms").all() as
+      Array<{ acronym: string; expansion: string; aliases: string | null }>;
+    for (const r of rows) {
+      const key = r.acronym.toLowerCase();
+      const exps = [r.expansion.toLowerCase()];
+      if (r.aliases) {
+        try { for (const a of JSON.parse(r.aliases) as string[]) exps.push(a.toLowerCase()); }
+        catch { /* ignore malformed aliases */ }
+      }
+      byToken.set(key, exps);
+      byExpansionWords.push({ words: tokenizeV2(r.expansion), acronym: key });
+    }
+  } catch { /* acronyms table absent — expansion becomes a no-op */ }
+  return { byToken, byExpansionWords };
+}
+function tokenGroup(t: string, g?: AcronymGlossary, sharedExpWords?: Set<string>): string {
+  const members = new Set<string>([t]);
+  if (t.includes("-")) for (const w of t.split("-")) if (w.length >= 2 && !STOPWORDS.has(w)) members.add(w);
+  if (g) {
+    for (const base of Array.from(members)) {
+      for (const exp of g.byToken.get(base) ?? []) {
+        members.add(exp);
+        for (const w of tokenizeV2(exp)) {
+          if (w.length >= 6 && !GENERIC_TOKENS.has(w) && !sharedExpWords?.has(w)) members.add(w);
+        }
+      }
+    }
+  }
+  return `(${Array.from(members).map(quote).join(" OR ")})`;
+}
+export function buildMatchLadder(query: string, g?: AcronymGlossary): string[] {
+  const seq = tokenizeV2(query);
+  const tokens = Array.from(new Set(seq)).slice(0, 40);
+  if (tokens.length === 0) return ['""'];
+  const qJoined = tokens.join(" ");
+  const extraByToken = new Map<string, string>();
+  if (g) for (const { words, acronym } of g.byExpansionWords) {
+    if (words.length >= 2 && qJoined.includes(words.join(" "))) {
+      extraByToken.set(words[0], acronym);
+    }
+  }
+  const sharedExpWords = new Set<string>();
+  if (g) {
+    const seenIn = new Map<string, number>();
+    for (const t of tokens) {
+      const words = new Set<string>();
+      for (const exp of g.byToken.get(t) ?? []) for (const w of tokenizeV2(exp)) words.add(w);
+      for (const w of words) seenIn.set(w, (seenIn.get(w) ?? 0) + 1);
+    }
+    for (const [w, n] of seenIn) if (n > 1) sharedExpWords.add(w);
+  }
+  const countWords = tokens.filter(t => COUNT_WORDS.has(t));
+  const groupOf = (t: string) => {
+    let base = tokenGroup(t, g, sharedExpWords);
+    const extra = extraByToken.get(t);
+    if (extra) base = base.replace(/\)$/, ` OR ${quote(extra)})`);
+    if (g?.byToken.has(t)) {
+      for (const cw of countWords) base = base.replace(/\)$/, ` OR ${quote(`${cw} ${t}`)})`);
+    }
+    return base;
+  };
+  const ladder: string[] = [];
+  const bigrams: string[] = [];
+  const inBigram = new Set<string>();
+  for (let i = 0; i + 1 < seq.length; i++) {
+    const a = seq[i], b = seq[i + 1];
+    const bothAcronyms = !!g && g.byToken.has(a) && g.byToken.has(b);
+    if (!GENERIC_TOKENS.has(a) && !GENERIC_TOKENS.has(b) && a !== b && !bothAcronyms) {
+      bigrams.push(quote(`${a} ${b}`));
+      inBigram.add(a); inBigram.add(b);
+    }
+  }
+  if (bigrams.length > 0) {
+    const rest = tokens.filter(t => !inBigram.has(t) && !GENERIC_TOKENS.has(t)).map(groupOf);
+    ladder.push([...bigrams, ...rest].join(" AND "));
+  }
+  const all = tokens.map(groupOf);
+  const informative = tokens.filter(t => !GENERIC_TOKENS.has(t)).map(groupOf);
+  ladder.push(all.join(" AND "));
+  if (informative.length > 0 && informative.length < all.length) {
+    ladder.push(informative.join(" AND "));
+  }
+  ladder.push(buildBm25Match(query));
+  return Array.from(new Set(ladder));
+}
+
+/** Cheap probe: does this corpus carry the v2-retriever features
+ *  (rel17-v7+)? chunk_fts presence is the load-bearing signal; the
+ *  meta.ftsAux flag corroborates (6-column clauses_fts with aux LAST,
+ *  so weighted bm25() needs 6 weights). */
+export function corpusHasV2Features(db: Database.Database): boolean {
+  try {
+    const n = db.prepare(
+      "SELECT COUNT(*) FROM sqlite_master WHERE name = 'chunk_fts'",
+    ).pluck().get() as number;
+    return n === 1;
+  } catch {
+    return false;
+  }
+}
+
+export interface RetrieverV2 {
+  hasChunks: boolean;
+  hasChunkFts: boolean;
+  /** Reference pipeline: ladder → 3 lists → fuse → citation-pull.
+   *  `qEmb` null → dense list skipped (FTS-only mode). */
+  retrieve(query: string, qEmb: Buffer | null): string[];
+  /** Rerank-feed variant: fused order (NO citation-pull) + the union of
+   *  the three candidate lists with best-chunk windows. The caller
+   *  reranks the union, then re-applies citation-pull via
+   *  applyCitationPull(). */
+  candidates(query: string, qEmb: Buffer | null): { fused: string[]; union: V2Candidate[] };
+  /** Citation-pull, exposed so the rerank path can run it AFTER the LLM
+   *  reorders (handoff §4: rerankers bury cited clauses). */
+  applyCitationPull(ids: string[], query: string): string[];
+}
+
+export function createRetrieverV2(db: Database.Database, opts: RetrieverV2Opts = {}): RetrieverV2 {
+  const RRF_K = opts.rrfK ?? 5;
+  const CAND = opts.candidates ?? 50;
+  const FLOOR_WEIGHT = opts.floorW ?? 0.35;
+  const VEC_Z = opts.vecZ ?? 0.5;
+  const LIST_W = opts.listW ?? { fts: 1, cfts: 1, vec: 1 };
+  const LTE_W = opts.lteW ?? 0.3;
+  const TESTMAT_W = opts.testW ?? 0.5;
+  const RF_W = opts.rfW ?? 0.6;
+  const MAX_PULL = opts.maxPull ?? 2;
+  const WEIGHTS = opts.weights ?? [4, 8, 2, 2, 1, 5];
+  const glossary = (opts.expand ?? true) ? loadGlossary(db) : undefined;
+
+  const ftsCols = (db.prepare("SELECT * FROM clauses_fts LIMIT 0").columns()).length;
+  const bm25Expr = WEIGHTS.length >= 5
+    ? `bm25(clauses_fts, ${WEIGHTS.slice(0, ftsCols).join(", ")})`
+    : "bm25(clauses_fts)";
+  const ftsSql = db.prepare(`
+    SELECT c.id FROM clauses_fts
+    JOIN clauses c ON c.rowid = clauses_fts.rowid
+    WHERE clauses_fts MATCH ? ORDER BY ${bm25Expr} LIMIT ?
+  `);
+  const hasChunks = (db.prepare(
+    "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('chunk_vec','chunk_map')",
+  ).pluck().get() as number) === 2;
+  const vecSql = hasChunks
+    ? db.prepare(`
+        SELECT m.clause_id AS id, v.distance AS d FROM chunk_vec v
+        JOIN chunk_map m ON m.chunk_rowid = v.rowid
+        WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance`)
+    : db.prepare(`
+        SELECT c.id, v.distance AS d FROM clauses_vec v
+        JOIN clauses c ON c.rowid = v.rowid
+        WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance`);
+  const hasChunkFts = corpusHasV2Features(db);
+  const chunkFtsSql = hasChunkFts ? db.prepare(`
+    SELECT clause_id AS id FROM chunk_fts
+    WHERE chunk_fts MATCH ? ORDER BY bm25(chunk_fts) LIMIT ?
+  `) : null;
+  // Best-matching window for ONE clause — feeds the LLM reranker's
+  // per-candidate snippet. clause_id is an UNINDEXED fts5 column, so the
+  // equality is a post-filter over the MATCH result set (fine at our
+  // scale: one narrow MATCH per union candidate, ~1 ms each).
+  const bestChunkSql = hasChunkFts ? db.prepare(`
+    SELECT text FROM chunk_fts
+    WHERE chunk_fts MATCH ? AND clause_id = ?
+    ORDER BY bm25(chunk_fts) LIMIT 1
+  `) : null;
+
+  const TIER_CAP = Math.max(15, Math.floor(CAND / 2));
+  function ladderCandidates(query: string, sql: Database.Statement, dedupeChunks = false) {
+    const out: Array<{ id: string; floor: boolean }> = [];
+    const seen = new Set<string>();
+    const ladder = buildMatchLadder(query, glossary);
+    ladder.forEach((match, li) => {
+      if (out.length >= CAND) return;
+      const floor = li === ladder.length - 1;
+      let rows: Array<{ id: string }> = [];
+      const fetch = dedupeChunks ? CAND * 4 : CAND;
+      try { rows = sql.all(match, fetch) as Array<{ id: string }>; }
+      catch { return; }
+      let taken = 0;
+      for (const r of rows) {
+        if (seen.has(r.id)) continue;
+        seen.add(r.id);
+        out.push({ id: r.id, floor });
+        taken++;
+        if (out.length >= CAND) break;
+        if (!floor && taken >= TIER_CAP) break;
+      }
+    });
+    return out;
+  }
+  function vecCandidates(qBlob: Buffer) {
+    const k = hasChunks ? CAND * 4 : CAND;
+    const raw = vecSql.all(qBlob, k) as Array<{ id: string; d: number }>;
+    const out: Array<{ id: string; d: number }> = [];
+    const seen = new Set<string>();
+    for (const r of raw) {
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      out.push(r);
+      if (out.length >= CAND) break;
+    }
+    return out;
+  }
+
+  const TEST_SPECS = /^(38\.5(08|21|23)|36\.5(08|21|23))/;
+  const RF_SPECS = /^38\.1(01|33)/;
+  function fuse(
+    fts: Array<{ id: string; floor: boolean }>,
+    cfts: Array<{ id: string; floor: boolean }>,
+    vec: Array<{ id: string; d: number }>,
+  ): string[] {
+    const score = new Map<string, number>();
+    for (const [list, w] of [[fts, LIST_W.fts], [cfts, LIST_W.cfts]] as const) {
+      list.forEach((f, i) =>
+        score.set(f.id, (score.get(f.id) ?? 0) + w * (f.floor ? FLOOR_WEIGHT : 1) / (RRF_K + i + 1)));
+    }
+    const sims = vec.map(v => -v.d);
+    const mean = sims.reduce((a, b) => a + b, 0) / (sims.length || 1);
+    const sd = Math.sqrt(sims.reduce((a, b) => a + (b - mean) ** 2, 0) / (sims.length || 1)) || 1;
+    vec.forEach((v, i) => {
+      const z = Math.max(0, Math.min((-v.d - mean) / sd, 3));
+      score.set(v.id, (score.get(v.id) ?? 0) + LIST_W.vec * (1 + VEC_Z * z) / (RRF_K + i + 1));
+    });
+    for (const [id, sc] of score) {
+      const spec = id.split("#")[0];
+      let w = 1;
+      if (spec.startsWith("36.")) w *= LTE_W;
+      if (TEST_SPECS.test(spec) || id.includes("#A.")) w *= TESTMAT_W;
+      if (RF_SPECS.test(spec)) w *= RF_W;
+      if (w !== 1) score.set(id, sc * w);
+    }
+    return Array.from(score.entries()).sort((a, b) => b[1] - a[1]).map(([id]) => id).slice(0, 50);
+  }
+
+  // ── citation pull with hub-IDF + chapter locality ─────────────────
+  const CITE_RE = /(?<!TS\s)(?<!TS\s\d\d\.\d\d\d,\s)\bclauses?\s+(\d+(?:\.\d+)+[A-Z]?)/gi;
+  // Cache next to the corpus file (app-data — writable in dev and packaged).
+  const indegPath = opts.indegreeCachePath
+    ?? path.join(path.dirname(String(db.name)), ".citation-indegree.json");
+  // Lazy: the full-corpus scan (~14.5k clauses × regex) costs a couple of
+  // seconds. Defer it to the FIRST citation-pull rather than engine
+  // construction so /api/corpus/status probes stay instant. Disk-cached
+  // after that first computation.
+  let _inDegree: Record<string, number> | null = null;
+  function inDegree(): Record<string, number> {
+    if (_inDegree) return _inDegree;
+    if (fsSync.existsSync(indegPath)) {
+      try {
+        _inDegree = JSON.parse(fsSync.readFileSync(indegPath, "utf8")) as Record<string, number>;
+        return _inDegree;
+      } catch { /* corrupt cache — recompute */ }
+    }
+    const deg: Record<string, number> = {};
+    const allRows = db.prepare("SELECT id, text FROM clauses").all() as Array<{ id: string; text: string }>;
+    for (const r of allRows) {
+      const spec = r.id.split("#")[0];
+      const seen = new Set<string>();
+      for (const m of r.text.matchAll(CITE_RE)) {
+        const ref = `${spec}#${m[1]}`;
+        if (ref !== r.id && !seen.has(ref)) { seen.add(ref); deg[ref] = (deg[ref] ?? 0) + 1; }
+      }
+    }
+    try { fsSync.writeFileSync(indegPath, JSON.stringify(deg)); } catch { /* best-effort cache */ }
+    _inDegree = deg;
+    return deg;
+  }
+  const hubIdf = (ref: string) => 1 / (1 + (inDegree()[ref] ?? 0) / 5);
+  const clauseTextSql = db.prepare("SELECT text FROM clauses WHERE id = ?").pluck();
+  const clauseExistsSql = db.prepare("SELECT 1 FROM clauses WHERE id = ? OR id LIKE ? LIMIT 1").pluck();
+  function citationPull(ids: string[], query: string): string[] {
+    if (MAX_PULL <= 0) return ids;
+    const qTokens = new Set(tokenizeV2(query));
+    const seen = new Set(ids);
+    const cands: Array<{ ref: string; citerIdx: number; relevance: number }> = [];
+    for (let i = 0; i < Math.min(5, ids.length); i++) {
+      const citer = ids[i];
+      const spec = citer.split("#")[0];
+      const text = clauseTextSql.get(citer) as string | undefined;
+      if (!text) continue;
+      for (const seg of text.split(/(?<=[.;])\s+|\n+/)) {
+        for (const m of seg.matchAll(CITE_RE)) {
+          const ref = `${spec}#${m[1]}`;
+          if (seen.has(ref)) continue;
+          if (ref === citer || ref.startsWith(citer + ".") || citer.startsWith(ref + ".")) continue;
+          if (clauseExistsSql.get(ref, `${ref}.%`) !== 1) continue;
+          const relevance = Array.from(qTokens).filter(t => seg.toLowerCase().includes(t)).length;
+          if (relevance < 1) continue;
+          cands.push({ ref, citerIdx: i, relevance });
+        }
+      }
+    }
+    const byRef = new Map<string, { ref: string; score: number; citerIdx: number; n: number }>();
+    for (const c of cands) {
+      const cur = byRef.get(c.ref);
+      if (!cur) byRef.set(c.ref, { ref: c.ref, score: c.relevance, citerIdx: c.citerIdx, n: 1 });
+      else {
+        cur.n++;
+        cur.score = Math.max(cur.score, c.relevance);
+        cur.citerIdx = Math.min(cur.citerIdx, c.citerIdx);
+      }
+    }
+    const chapterOf = (id: string) => id.split("#")[1]?.split(".")[0] ?? "";
+    const ranked = Array.from(byRef.values())
+      .map(r => {
+        const citerId = ids[r.citerIdx];
+        const local = citerId && chapterOf(citerId) === chapterOf(r.ref) ? 1.5 : 1;
+        return { ...r, score: r.score * hubIdf(r.ref) * local - 0.05 * r.citerIdx };
+      })
+      .sort((a, b) => b.score - a.score);
+    const out = [...ids];
+    let pulled = 0;
+    for (const c of ranked) {
+      if (pulled >= MAX_PULL) break;
+      if (out.includes(c.ref)) continue;
+      out.splice(Math.min(4 + pulled, out.length), 0, c.ref);
+      pulled++;
+    }
+    return out.slice(0, 50);
+  }
+
+  /** Best chunk window for one clause against the query's broad OR
+   *  expression. Null when nothing matched (definitional clause, or a
+   *  purely-semantic candidate). */
+  function bestChunkFor(id: string, orFloorMatch: string): string | null {
+    if (!bestChunkSql) return null;
+    try {
+      const t = bestChunkSql.get(orFloorMatch, id) as { text?: string } | undefined;
+      return t?.text ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  function gatherLists(query: string, qEmb: Buffer | null) {
+    const fts = ladderCandidates(query, ftsSql);
+    const cfts = chunkFtsSql ? ladderCandidates(query, chunkFtsSql, true) : [];
+    const vec = qEmb ? vecCandidates(qEmb) : [];
+    return { fts, cfts, vec };
+  }
+
+  return {
+    hasChunks,
+    hasChunkFts,
+
+    retrieve(query: string, qEmb: Buffer | null): string[] {
+      const { fts, cfts, vec } = gatherLists(query, qEmb);
+      return citationPull(fuse(fts, cfts, vec), query);
+    },
+
+    candidates(query: string, qEmb: Buffer | null) {
+      const { fts, cfts, vec } = gatherLists(query, qEmb);
+      const fused = fuse(fts, cfts, vec);
+      const fusedRankById = new Map(fused.map((id, i) => [id, i + 1]));
+      // Union of the three lists (handoff §4: fusion loses list-specific
+      // hits the LLM can save). Order: fused rank first, then first-seen.
+      const seen = new Set<string>();
+      const unionIds: string[] = [];
+      for (const id of fused) { if (!seen.has(id)) { seen.add(id); unionIds.push(id); } }
+      for (const list of [fts.map(f => f.id), cfts.map(f => f.id), vec.map(v => v.id)]) {
+        for (const id of list) { if (!seen.has(id)) { seen.add(id); unionIds.push(id); } }
+      }
+      const orFloor = buildBm25Match(query);
+      const union: V2Candidate[] = unionIds.map(id => ({
+        id,
+        bestChunk: bestChunkFor(id, orFloor),
+        fusedRank: fusedRankById.get(id) ?? null,
+      }));
+      return { fused, union };
+    },
+
+    applyCitationPull(ids: string[], query: string): string[] {
+      return citationPull(ids, query);
+    },
+  };
+}

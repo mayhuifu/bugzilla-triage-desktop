@@ -3,7 +3,7 @@ import { readLocalManifest, fetchRemoteManifest, isRemoteNewer, type CorpusManif
 import { getDownloadProgress } from "@/lib/corpus/downloader";
 import { getCorpusMeta, corpusEngineError } from "@/lib/corpus/store";
 import { activeRetrieverPath } from "@/lib/corpus/retriever";
-import { BGE_EMBEDDER_MODEL_ID } from "@/lib/corpus/embedder-bge";
+import { activeQueryEmbedderModelId, BGE_EMBEDDER_MODEL_ID } from "@/lib/corpus/embedder-bge";
 import { RERANKER_MODEL_ID } from "@/lib/corpus/reranker-ce";
 import { loadSettings } from "@/lib/settings";
 import { withUser } from "@/lib/users/with-user";
@@ -50,7 +50,11 @@ export const GET = withUser(async (req: Request) => {
   // the UI badge keys off. embeddingModel (corpus) vs queryEmbedderModel
   // (bundled) lets the UI explain WHY hybrid is off when it is.
   const retrieverPath = activeRetrieverPath();
-  const hybridActive = retrieverPath === "hybrid-rrf" || retrieverPath === "hybrid-rrf+rerank";
+  // "v2-hybrid" = rel17-v7 retriever-v2 with dense chunk vectors active;
+  // "v2-fts" is its keyword-only degrade (embedder missing/mismatched) and
+  // deliberately does NOT count as hybrid.
+  const hybridActive = retrieverPath === "hybrid-rrf" || retrieverPath === "hybrid-rrf+rerank"
+    || retrieverPath === "v2-hybrid";
   // Reranking (Phase A / v0.5.5) layers on top of hybrid. rerankerActive is
   // the headline bool the UI badge keys off; rerankerModel names the bundled
   // cross-encoder for the debug surface.
@@ -74,7 +78,10 @@ export const GET = withUser(async (req: Request) => {
     rerankerActive,
     rerankerModel: RERANKER_MODEL_ID,                  // bundled cross-encoder
     embeddingModel: meta?.embeddingModel ?? null,     // what the corpus was built with
-    queryEmbedderModel: BGE_EMBEDDER_MODEL_ID,         // what the desktop bundles
+    // What the desktop's ACTIVE query embedder claims (corpus-aware: bge-small
+    // for v5/v6, bge-m3 for v7+). Falls back to the bundled default before the
+    // first retrieval registers one.
+    queryEmbedderModel: activeQueryEmbedderModelId() ?? BGE_EMBEDDER_MODEL_ID,
   };
 
   if (!checkRemote) {

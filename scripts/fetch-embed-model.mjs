@@ -25,7 +25,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPO = "Xenova/bge-small-en-v1.5";
+// EMBED_REPO overrides which ONNX repo to stage. The default bundles the
+// classic bge-small (rel17-v5/v6 corpora). For the rel17-v7 (bge-m3)
+// corpus the runtime embedder normally LAZY-DOWNLOADS Xenova/bge-m3
+// (~570 MB q8) into the app-data cache on first use — pre-stage it here
+// only for fully-offline installs:
+//
+//     EMBED_REPO=Xenova/bge-m3 node scripts/fetch-embed-model.mjs
+const REPO = process.env.EMBED_REPO || "Xenova/bge-small-en-v1.5";
 const REV = "main";
 const DTYPE = (process.env.BGE_DTYPE || "q8").toLowerCase();
 // Default to the hf-mirror.com mirror: huggingface.co's LFS/CDN downloads are

@@ -12,12 +12,15 @@ import { allowRate, rateEnv } from "@/lib/users/rate-limit";
 
 export const dynamic = "force-dynamic";
 
-/** Hybrid is "active" whether or not the cross-encoder rerank layer is on
- *  top (Phase A / v0.5.5 added "hybrid-rrf+rerank"). The UI badge keys off
- *  this bool; reranking is a refinement of the hybrid path, not a separate
- *  retrieval mode. */
+/** Hybrid is "active" whether or not a rerank layer is on top (cross-encoder
+ *  "hybrid-rrf+rerank" or LLM "…+llm-rerank"). The UI badge keys off this
+ *  bool; reranking is a refinement of the hybrid path, not a separate
+ *  retrieval mode. "v2-hybrid" is the rel17-v7 retriever-v2 engine with
+ *  dense chunk vectors active; "v2-fts" (deliberately NOT here) is its
+ *  keyword-only degrade when the embedder is missing or mismatched. */
 function isHybrid(p: string): boolean {
-  return p === "hybrid-rrf" || p === "hybrid-rrf+rerank" || p === "hybrid-rrf+llm-rerank";
+  return p === "hybrid-rrf" || p === "hybrid-rrf+rerank" || p === "hybrid-rrf+llm-rerank"
+    || p === "v2-hybrid" || p === "v2-hybrid+llm-rerank";
 }
 
 // GET /api/corpus/search?q=<free text | citation>&limit=<N> — standalone

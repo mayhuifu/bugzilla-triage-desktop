@@ -23,13 +23,15 @@
 
 import "server-only";
 import type { TicketDetail } from "../types";
+import type DatabaseT from "better-sqlite3";
 import { corpusHasVectors, getCorpusDb, getFigureImagesForClause } from "./store";
 import { expandAcronyms } from "./acronyms";
 import { getCorpusEmbedder } from "./embedder";
 import { ensureBgeEmbedderRegistered } from "./embedder-bge";
 import { getCorpusReranker, type CorpusReranker } from "./reranker";
 import { ensureRerankerRegistered } from "./reranker-ce";
-import { getLlmReranker } from "./reranker-llm";
+import { getLlmReranker, rerankUnionPool } from "./reranker-llm";
+import { createRetrieverV2, corpusHasV2Features, type RetrieverV2 } from "./retriever-v2";
 import { hasConfiguredLlmProvider } from "@/lib/llm";
 
 /** Structured table lifted from the v2 corpus's `tables_json` column.
@@ -85,8 +87,14 @@ export interface RetrievedClause {
    *  relevant. Used for the debug surface and to expose why ordering
    *  differs from the raw RRF fusion. */
   rerankScore?: number;
-  /** Retrieval source label for the SpecDrawer / debug surface. */
-  retrieverPath?: "bm25-v1" | "bm25-v2" | "hybrid-rrf" | "hybrid-rrf+rerank" | "hybrid-rrf+llm-rerank";
+  /** Retrieval source label for the SpecDrawer / debug surface.
+   *  The "v2-*" labels are the rel17-v7 retriever-v2 engine (concept-group
+   *  MATCH ladder + chunk FTS/vec + weighted RRF + scope priors +
+   *  citation-pull); "v2-hybrid" means dense chunk vectors participated,
+   *  "v2-fts" means FTS-only (no/mismatched embedder — the hard-fail rule). */
+  retrieverPath?:
+    | "bm25-v1" | "bm25-v2" | "hybrid-rrf" | "hybrid-rrf+rerank" | "hybrid-rrf+llm-rerank"
+    | "v2-fts" | "v2-hybrid" | "v2-fts+llm-rerank" | "v2-hybrid+llm-rerank";
   /** 1-based position in the pre-rerank hybrid order. Present only on
    *  LLM-reranked results ("hybrid-rrf+llm-rerank" path). Lets the UI
    *  show the rank delta (e.g. "was #3 in hybrid, now #1 after LLM rerank"). */
@@ -111,6 +119,12 @@ export interface RetrievedClause {
 }
 
 const TOP_K = 4;
+// v7 corpus (retriever-v2) hands the triage model a WIDER context window:
+// Tele-Eval answer-containment measured 82.0% at top-5 vs 91.3% at top-10,
+// so the handoff (docs/desktop-port-retriever-v2.md §4) says widen to
+// top-15/20 even without rerank. 15 × ≤1200 chars ≈ 4–5k tokens — cheap
+// insurance for the triage prompt.
+const TRIAGE_TOP_K_V2 = 15;
 const MAX_TEXT_CHARS = 1200; // per-clause cap when injecting into prompt
 
 // Hybrid retrieval constants — mirrored from the corpus pipeline so the
@@ -258,25 +272,43 @@ function buildQueryFromText(text: string, useAcronymExpansion: boolean): QuerySh
   return { match, tokens: uniq };
 }
 
-/** Read meta.embeddingModel from the corpus once (cached for the process). */
-let _embedModelChecked = false;
-let _embedModelInCorpus: string | null = null;
+/** Read meta.embeddingModel from the corpus, cached PER DB HANDLE — a
+ *  process-level cache would keep serving the old model after an
+ *  in-process corpus update (v6→v7 swaps bge-small → bge-m3, and the
+ *  embedder registration keys off this value). */
+const _embedModelByDb = new WeakMap<DatabaseT.Database, string | null>();
 function corpusEmbeddingModel(): string | null {
-  if (_embedModelChecked) return _embedModelInCorpus;
-  _embedModelChecked = true;
   const db = getCorpusDb();
   if (!db) return null;
+  if (_embedModelByDb.has(db)) return _embedModelByDb.get(db) ?? null;
+  let value: string | null = null;
   try {
     const row = db.prepare("SELECT value FROM meta WHERE key='embeddingModel'").get() as { value?: string } | undefined;
-    _embedModelInCorpus = row?.value ?? null;
+    value = row?.value ?? null;
   } catch {
-    _embedModelInCorpus = null;
+    value = null;
   }
-  return _embedModelInCorpus;
+  _embedModelByDb.set(db, value);
+  return value;
 }
 
+/** retriever-v2 engine, one per db handle (prepared statements + glossary +
+ *  lazy indegree cache live on it). WeakMap so a corpus re-open drops the
+ *  old engine with the old handle. */
+const _v2Engines = new WeakMap<DatabaseT.Database, RetrieverV2>();
+function getV2Engine(db: DatabaseT.Database): RetrieverV2 {
+  let engine = _v2Engines.get(db);
+  if (!engine) {
+    engine = createRetrieverV2(db);
+    _v2Engines.set(db, engine);
+  }
+  return engine;
+}
+
+let _warnedV2FtsOnly = false;
+
 /** Resolve which retrieval path to use against the open corpus. */
-function decidePath(): "bm25-v1" | "bm25-v2" | "hybrid-rrf" {
+function decidePath(): "bm25-v1" | "bm25-v2" | "hybrid-rrf" | "v2-fts" | "v2-hybrid" {
   const db = getCorpusDb();
   if (!db) return "bm25-v1";
   let schemaVersion: string | undefined;
@@ -285,18 +317,39 @@ function decidePath(): "bm25-v1" | "bm25-v2" | "hybrid-rrf" {
   } catch { /* meta read failed → treat as v1 */ }
   if (!schemaVersion || schemaVersion.startsWith("1")) return "bm25-v1";
 
-  // v2 corpus. Use hybrid only when sqlite-vec is loaded AND a query
-  // embedder has been registered AND its model matches the corpus's
-  // build-time model. Otherwise fall back to the wider-FTS5 BM25 path.
-  if (!corpusHasVectors()) return "bm25-v2";
-  // Lazily register the bundled bge embedder on first need (idempotent).
-  // Done here rather than via instrumentation.ts because this module is
-  // node-only; instrumentation is also edge-compiled, where the embedder's
-  // node:fs / onnxruntime-node deps can't resolve.
-  ensureBgeEmbedderRegistered();
-  const embedder = getCorpusEmbedder();
-  if (!embedder) return "bm25-v2";
+  // Lazily register the query embedder MATCHING the installed corpus
+  // (bge-small for v5/v6, bge-m3 for v7+) on first need (idempotent per
+  // corpus model). Done here rather than via instrumentation.ts because
+  // this module is node-only; instrumentation is also edge-compiled, where
+  // the embedder's node:fs / onnxruntime deps can't resolve.
   const corpusModel = corpusEmbeddingModel();
+  ensureBgeEmbedderRegistered(corpusModel);
+  const embedder = getCorpusEmbedder();
+  const embedderMatches = !!embedder && (!corpusModel || embedder.modelId === corpusModel);
+
+  // rel17-v7+ corpus (chunk_fts / chunk_vec / aux FTS column): the
+  // retriever-v2 engine. Dense participates only when sqlite-vec loaded AND
+  // the embedder matches the corpus's build model (handoff hard-fail rule);
+  // otherwise the engine still runs its FTS ladder + chunk BM25 + priors.
+  if (corpusHasV2Features(db)) {
+    if (corpusHasVectors() && embedderMatches) return "v2-hybrid";
+    if (!_warnedV2FtsOnly) {
+      _warnedV2FtsOnly = true;
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[corpus] v2 corpus active but dense retrieval is OFF ` +
+        `(embedder=${embedder?.modelId ?? "none"} vs corpus=${corpusModel ?? "?"}, ` +
+        `vectors=${corpusHasVectors()}) — running FTS-only (v2-fts).`,
+      );
+    }
+    return "v2-fts";
+  }
+
+  // v2/v3 corpus (rel17-v5/v6). Use hybrid only when sqlite-vec is loaded
+  // AND a query embedder has been registered AND its model matches the
+  // corpus's build-time model. Otherwise the wider-FTS5 BM25 path.
+  if (!corpusHasVectors()) return "bm25-v2";
+  if (!embedder) return "bm25-v2";
   if (corpusModel && embedder.modelId !== corpusModel) {
     // eslint-disable-next-line no-console
     console.warn(`[corpus] embedder model '${embedder.modelId}' does not match corpus '${corpusModel}'; falling back to BM25`);
@@ -360,6 +413,138 @@ function mapRows(rows: CandidateRow[], path: RetrievedClause["retrieverPath"]): 
     bm25Score: r.score,
     retrieverPath: path,
   }));
+}
+
+// ── retriever-v2 path (rel17-v7+ corpora) ─────────────────────────
+
+/** Fetch full clause rows for a set of ids (unordered — pair with
+ *  materializeIds to restore ranking order). */
+function fetchClauseRows(db: DatabaseT.Database, ids: string[]): CandidateRow[] {
+  if (ids.length === 0) return [];
+  const placeholders = ids.map(() => "?").join(",");
+  return db.prepare(`
+    SELECT id, spec, clause_no, citation, title, parent_title, text
+    FROM clauses WHERE id IN (${placeholders})
+  `).all(...ids) as CandidateRow[];
+}
+
+/** Turn a ranked id list into RetrievedClause[] preserving order.
+ *
+ *  Citation-pull can surface a PARENT id (the corpus stores leaf clauses;
+ *  a clause citing "clause 9.2.5" passes the engine's existence probe when
+ *  only 9.2.5.1/.2 exist). Resolve those to their first leaf child instead
+ *  of silently dropping them — same ancestor rule lookupClause() uses. */
+function materializeIds(
+  db: DatabaseT.Database,
+  ids: string[],
+  label: RetrievedClause["retrieverPath"],
+  hybridRankById?: Map<string, number>,
+): RetrievedClause[] {
+  const byId = new Map(fetchClauseRows(db, ids).map(r => [r.id, r]));
+  for (const id of ids) {
+    if (byId.has(id)) continue;
+    try {
+      const escaped = id.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+      const row = db.prepare(`
+        SELECT id, spec, clause_no, citation, title, parent_title, text
+        FROM clauses WHERE id LIKE ? ESCAPE '\\' ORDER BY id LIMIT 1
+      `).get(`${escaped}.%`) as CandidateRow | undefined;
+      // Keyed by the REQUESTED id so the ranked-order mapping below finds it.
+      if (row) byId.set(id, row);
+    } catch { /* leave missing — dropped below */ }
+  }
+  const ordered = ids.map(id => byId.get(id)).filter((r): r is CandidateRow => !!r);
+  // A parent id and its own leaf can both be in `ids` — dedupe on the
+  // RESOLVED clause id, keeping the better (earlier) rank.
+  const seen = new Set<string>();
+  const deduped = ordered.filter(r => (seen.has(r.id) ? false : (seen.add(r.id), true)));
+  const mapped = mapRows(deduped, label);
+  if (hybridRankById) {
+    for (const m of mapped) m.hybridRank = hybridRankById.get(m.clauseId);
+  }
+  return mapped;
+}
+
+/** Per-candidate snippet cap for the union-pool LLM rerank — ~300 tokens
+ *  (the handoff's budget): for long clauses the head is boilerplate, so the
+ *  best-matching chunk window (chunk_fts) is used when available. */
+const V2_RERANK_SNIPPET_CHARS = 1200;
+
+/** retriever-v2 retrieval (rel17-v7+). Test-spec demotion is NOT layered
+ *  on top here — the engine's validated scope priors already down-weight
+ *  test material (×0.5) and RF (×0.6) inside the fusion, which is the
+ *  tuned equivalent.
+ *
+ *  With rerank === "llm": the LLM sees the UNION of the three candidate
+ *  lists (~100–150 clauses, each as its best-matching chunk window), one
+ *  listwise call at temperature 0; the fused order is the fallback on any
+ *  failure. Citation-pull runs AFTER the rerank (cited clauses share no
+ *  vocabulary with the query; rerankers bury them). */
+async function v2Retrieve(
+  queryText: string,
+  limit: number,
+  pathLabel: "v2-fts" | "v2-hybrid",
+  rerankQuery?: string,
+  rerank?: "llm",
+): Promise<RetrievedClause[]> {
+  const db = getCorpusDb();
+  if (!db) return [];
+  try {
+    const engine = getV2Engine(db);
+
+    // Dense query vector — hybrid only. An embed failure (e.g. the lazy
+    // bge-m3 download hasn't completed) degrades to FTS-only, never errors.
+    let qEmb: Buffer | null = null;
+    if (pathLabel === "v2-hybrid") {
+      const embedder = getCorpusEmbedder();
+      if (embedder) {
+        try {
+          qEmb = vecToBlob(await embedder.embed(queryText));
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn("[corpus] v2 query embed failed; continuing FTS-only:", err);
+        }
+      }
+    }
+    const effLabel: "v2-fts" | "v2-hybrid" = qEmb ? pathLabel : "v2-fts";
+
+    if (rerank === "llm" && hasConfiguredLlmProvider()) {
+      const { fused, union } = engine.candidates(queryText, qEmb);
+      if (union.length > 1) {
+        const rowById = new Map(fetchClauseRows(db, union.map(u => u.id)).map(r => [r.id, r]));
+        const items = union.map(u => {
+          const r = rowById.get(u.id);
+          const head = r
+            ? `${r.citation} — ${r.parent_title ? `${r.parent_title} — ` : ""}${r.title}`
+            : u.id;
+          const body = (u.bestChunk ?? r?.text ?? "").slice(0, V2_RERANK_SNIPPET_CHARS);
+          return { id: u.id, text: `${head}\n${body}` };
+        });
+        const ordered = await rerankUnionPool(rerankQuery || queryText, items);
+        if (ordered.length > 0) {
+          // LLM order wins; fused-only leftovers (ids the parse dropped)
+          // append as the fallback tail. Then citation-pull, then slice.
+          const seen = new Set(ordered);
+          const withTail = [...ordered, ...fused.filter(id => !seen.has(id))];
+          const finalIds = engine.applyCitationPull(withTail, queryText).slice(0, limit);
+          const fusedRankById = new Map(
+            union.filter(u => u.fusedRank !== null).map(u => [u.id, u.fusedRank as number]),
+          );
+          return materializeIds(db, finalIds, `${effLabel}+llm-rerank`, fusedRankById);
+        }
+      }
+      // Rerank unavailable/failed → fused order + citation-pull (below).
+      const ids = engine.applyCitationPull(fused, queryText).slice(0, limit);
+      return materializeIds(db, ids, effLabel);
+    }
+
+    const ids = engine.retrieve(queryText, qEmb).slice(0, limit);
+    return materializeIds(db, ids, effLabel);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn("[corpus] v2 retrieval failed:", err);
+    return [];
+  }
 }
 
 /** Synchronous BM25 path used by both v1 and v2 (the SQL differs only in
@@ -541,6 +726,26 @@ async function hybridRetrieve(
  *  to unlock hybrid. */
 export function retrieveContext(ticket: TicketDetail): RetrievedClause[] {
   const path = decidePath();
+  if (path === "v2-fts" || path === "v2-hybrid") {
+    // Sync caller on a v7 corpus: the v2 engine's FTS side (MATCH ladder +
+    // chunk BM25 + priors + citation-pull) is fully synchronous — only the
+    // dense list needs async embedding, so run FTS-only here.
+    const db = getCorpusDb();
+    if (db) {
+      try {
+        const engine = getV2Engine(db);
+        const queryText = ticketQueryText(ticket);
+        const ids = engine.retrieve(queryText, null).slice(0, TRIAGE_TOP_K_V2);
+        const out = materializeIds(db, ids, "v2-fts");
+        if (out.length > 0) return out;
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn("[corpus] v2 sync retrieval failed; falling back to BM25:", err);
+      }
+    }
+    const q = buildQuery(ticket, /*useAcronymExpansion=*/ true);
+    return bm25Retrieve(q.match, "bm25-v2");
+  }
   if (path === "hybrid-rrf") {
     // sync caller: degrade to v2 BM25 — pleasant because v2 already
     // widens the FTS5 index and we still get acronym expansion.
@@ -555,18 +760,33 @@ export function retrieveContext(ticket: TicketDetail): RetrievedClause[] {
   return bm25Retrieve(q.match, "bm25-v1");
 }
 
+/** The blob the embedder + v2 engine see for a ticket — summary first
+ *  (highest signal), then the capped description and component. */
+function ticketQueryText(ticket: TicketDetail): string {
+  return [
+    ticket.summary,
+    ticket.description.slice(0, 2000),
+    ticket.component ?? "",
+  ].join("\n");
+}
+
 /** Async overload — preferred when the host is willing to await. Uses
  *  the hybrid CTE when available, falling back through BM25-v2 / BM25-v1
  *  on any error. */
 export async function retrieveContextAsync(ticket: TicketDetail): Promise<RetrievedClause[]> {
   const path = decidePath();
+  if (path === "v2-fts" || path === "v2-hybrid") {
+    // v7 corpus: retriever-v2 with the WIDER triage handoff (top-15 — see
+    // TRIAGE_TOP_K_V2). No LLM rerank on the triage path: triage itself is
+    // the LLM call, and the containment lift comes from the wider window.
+    const hits = await v2Retrieve(ticketQueryText(ticket), TRIAGE_TOP_K_V2, path);
+    if (hits.length > 0) return hits;
+    const q = buildQuery(ticket, /*useAcronymExpansion=*/ true);
+    return bm25Retrieve(q.match, "bm25-v2");
+  }
   if (path === "hybrid-rrf") {
     const q = buildQuery(ticket, /*useAcronymExpansion=*/ true);
-    const queryText = [
-      ticket.summary,
-      ticket.description.slice(0, 2000),
-      ticket.component ?? "",
-    ].join("\n");
+    const queryText = ticketQueryText(ticket);
     // Concise query for the cross-encoder (the summary is the highest-signal
     // line; the long description is for the embedder, not the reranker).
     const rerankQuery = [ticket.summary, ticket.component]
@@ -611,6 +831,15 @@ export async function retrieveByText(
   if (!trimmed) return [];
   const limit = Math.max(1, Math.min(opts.limit ?? TOP_K, 50));
   const path = decidePath();
+  if (path === "v2-fts" || path === "v2-hybrid") {
+    // The search-box text is already concise — reuse it as the rerank query.
+    const hits = await v2Retrieve(trimmed, limit, path, trimmed, opts.rerank);
+    if (hits.length > 0) return hits;
+    // v2 engine failed/empty → plain OR-of-terms BM25 over clauses_fts
+    // (column-less MATCH still works on the 6-column v7 index).
+    const q = buildQueryFromText(trimmed, /*useAcronymExpansion=*/ true);
+    return bm25Retrieve(q.match, "bm25-v2", limit);
+  }
   if (path === "hybrid-rrf") {
     const q = buildQueryFromText(trimmed, /*useAcronymExpansion=*/ true);
     // The search-box text is already concise — reuse it as the rerank query.
@@ -631,11 +860,15 @@ export async function retrieveByText(
  *  /api/corpus/status report `hybridActive` to the UI (and surfaces the
  *  silent BM25-fallback-on-model-mismatch case, which is otherwise
  *  invisible). */
-export function activeRetrieverPath(): "bm25-v1" | "bm25-v2" | "hybrid-rrf" | "hybrid-rrf+rerank" | "none" {
+export function activeRetrieverPath():
+  | "bm25-v1" | "bm25-v2" | "hybrid-rrf" | "hybrid-rrf+rerank"
+  | "v2-fts" | "v2-hybrid" | "none" {
   if (!getCorpusDb()) return "none";
   const path = decidePath();
-  // The reranker layers on top of the hybrid path only (Phase A scope). When
-  // hybrid is active AND a reranker is registered, the live path reranks.
+  // The cross-encoder reranker layers on top of the LEGACY hybrid path only
+  // (Phase A scope; the v2 engine's rerank is the per-request LLM toggle,
+  // not a standing mode). When hybrid is active AND a reranker is
+  // registered, the live path reranks.
   if (path === "hybrid-rrf" && getActiveReranker()) return "hybrid-rrf+rerank";
   return path;
 }
