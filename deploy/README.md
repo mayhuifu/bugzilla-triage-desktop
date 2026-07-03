@@ -110,18 +110,42 @@ volumes:
 Everything stateful lives in the **`btdata` volume**, mounted at `/data`:
 
 ```
-/data/bugzilla-triage-desktop/corpus/corpus.sqlite   # 3GPP corpus (~170 MB, re-downloadable)
+/data/bugzilla-triage-desktop/corpus/corpus.sqlite   # 3GPP corpus (~520 MB, re-downloadable)
+/data/bugzilla-triage-desktop/models/                # bge-m3 query embedder (~590 MB, re-downloadable)
 /data/profiles.db                                    # user profiles + sessions (encrypted keys)
 /data/audit.log                                      # who wrote what to Bugzilla, when
 ```
 
 - **Backup** = snapshot the `btdata` volume **and** keep the `.env` (the
-  `APP_SECRET` in it is required to decrypt profiles). The corpus needs no
-  backup — it re-downloads.
-- **Upgrade**: `git pull && docker compose up -d --build`. Profiles, sessions,
-  corpus and audit log survive in the volume.
+  `APP_SECRET` in it is required to decrypt profiles). The corpus and
+  embedder need no backup — they re-download.
 - **Audit queries**: `docker compose exec app sh -c 'cat /data/audit.log'` —
   one JSON object per line: `{ts, user, action: comment|label|status, bugId}`.
+
+### Upgrade runbook (cheat-sheet)
+
+```bash
+# 1. new app version (pin a release tag; `git pull` alone tracks main)
+git fetch --tags && git checkout vX.Y.Z
+docker compose up -d --build            # profiles/sessions/corpus survive in the volume
+
+# 2. corpus + query embedder (only when a new corpus release is out, or
+#    after first upgrading to >= v0.7.13 with a rel17-v7 corpus)
+docker compose exec app node scripts/install-corpus.mjs --force
+docker compose restart app
+
+# 3. verify
+docker compose exec app node -e "console.log('ok')"   # container healthy
+# then: Spec page → search → badge shows "Hybrid retrieval"
+```
+
+The installer is idempotent and resume-capable: `--force` upgrades the
+corpus to the newest release (stable `releases/latest` manifest alias) and
+stages the matching query embedder if it isn't already on the volume.
+Downloads RESUME after connection resets — relevant on CN networks where
+github.com/hf connections drop intermittently; if a route is hard-blocked,
+use `-e CORPUS_MANIFEST_URL=…` (internal mirror) and
+`-e HF_ENDPOINT=…` overrides, or the fully-offline mounts above.
 
 ## Smoke checklist (deployment test)
 
@@ -135,11 +159,15 @@ Everything stateful lives in the **`btdata` volume**, mounted at `/data`:
    Bugzilla comments are authored by the respective person. Details/gotchas:
    `scripts/dev-multiuser-smoke.sh` in the repo root.
 6. 3GPP corpus (optional): run `docker compose exec app node scripts/install-corpus.mjs`
-   once (see "3GPP spec corpus" above), then open the Spec page and search →
-   results cite real clauses. Skip it and triage still works (paraphrase).
+   once (see "3GPP spec corpus" above — installs the corpus AND, for
+   rel17-v7+, stages the bge-m3 query embedder), then open the Spec page and
+   search → results cite real clauses and the badge reads "Hybrid retrieval".
+   Skip it and triage still works (paraphrase).
 7. After a submit: `audit.log` gained a line with the submitter's email.
 8. In-container sanity (only if something's off):
    `docker compose exec app ls node_modules/sqlite-vec-linux-x64/vec0.so models/Xenova/bge-small-en-v1.5/config.json`
+   and, for a rel17-v7 corpus, the staged embedder on the volume:
+   `docker compose exec app ls /data/bugzilla-triage-desktop/models/Xenova/bge-m3/onnx/`
 
 ## Troubleshooting
 
