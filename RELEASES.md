@@ -12,6 +12,63 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.11 — retriever v2 + bge-m3 embedder for the rel17-v7 corpus
+
+**Tagged:** 2026-07-03
+**Published:** 2026-07-03
+
+### Highlights
+
+- **The 3GPP spec search engine is generation 2.** On a rel17-v7+ corpus the
+  app now runs the retriever-v2 pipeline validated in the corpus repo:
+  concept-group MATCH ladder with acronym expansion, chunk-level BM25 +
+  chunk-level dense vectors (length-fair for 35k-char capability clauses),
+  weighted RRF fusion with scope priors, and citation-pull. Older corpora
+  (rel17-v5/v6) keep the existing paths untouched.
+- **bge-m3 query embedder, lazy-downloaded.** rel17-v7 is embedded with
+  BAAI/bge-m3 (1024-dim); the app picks the matching query embedder by the
+  corpus's `meta.embeddingModel` (bge-small for v5/v6, bge-m3 for v7+). The
+  ~570 MB int8 ONNX is NOT bundled in the installer — it downloads once on
+  first use into the app-data cache (`HF_ENDPOINT` overridable, defaults to
+  hf-mirror.com). Fully-offline installs can pre-stage it:
+  `EMBED_REPO=Xenova/bge-m3 node scripts/fetch-embed-model.mjs`.
+  A mismatched/missing embedder degrades to keyword-only retrieval — never
+  silently wrong rankings.
+- **AI re-rank got a major upgrade.** The /spec "AI rank" toggle now feeds
+  the model the UNION of all three candidate lists (~150 clauses, each as
+  its best-matching chunk window) in ONE listwise call at temperature 0,
+  with a provider-agnostic prompt that encodes 3GPP ranking domain rules
+  (UE-capability clauses are primary answers for "can X and Y transmit
+  together / how many" questions; conformance-test clauses rank below
+  normative). Works with ANY configured provider — validated end-to-end
+  against DeepSeek (the shared-server default). On the 13-row UL-coexistence
+  eval: 3/13 rows fused → **7/13 with AI rank on** (remaining rows are
+  documented query-information limits).
+- **Wider triage context.** On a v7 corpus, AI triage and Ask Zilla hand the
+  model up to 15 retrieved clauses (was 4) — measured answer-containment
+  goes 82%@5 → 91.3%@10 on Tele-Eval.
+
+### Changes
+
+- `lib/corpus/retriever-v2.ts` (new): the retriever-v2 engine port (MATCH
+  ladder, chunk FTS/vec candidates, weighted RRF k=5, scope priors,
+  citation-pull, union-candidate export for reranking).
+- `lib/corpus/embedder-bge.ts`: multi-model registry keyed by
+  `meta.embeddingModel`; app-data model cache; `HF_ENDPOINT` support.
+- `lib/corpus/retriever.ts`: v7 capability probe → new `v2-hybrid` /
+  `v2-fts` paths (+ `+llm-rerank` variants); union-pool rerank flow with
+  citation-pull after rerank; triage top-15; per-db-handle caches.
+- `lib/corpus/reranker-llm.ts`: `rerankUnionPool()` — one listwise call,
+  temperature 0, ids-only output with permutation-repair parsing (tolerates
+  fences/prose/echoed ids), fused-order fallback on any failure.
+- `lib/llm.ts`: `runLlmText` gained a `temperature` option (API providers).
+- `app/api/corpus/search|status`: v2 path labels in `hybridActive` /
+  embedder reporting.
+- `lib/assistant/tools.ts`: search_specs limit clamp raised to 15.
+- `scripts/fetch-embed-model.mjs`: `EMBED_REPO` override for staging bge-m3.
+
+---
+
 ## v0.7.10 — full-width layout, Settings crash fix, corpus-grounded Ask Zilla
 
 **Tagged:** 2026-07-02
