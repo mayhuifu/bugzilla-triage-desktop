@@ -147,6 +147,10 @@ function streamToFile(url, dest, onProgress, timeoutMs = 10 * 60_000, redirects 
         const out = fs.createWriteStream(dest);
         let received = 0;
         res.on("data", (c) => { received += c.length; onProgress(received); arm(req); });
+        // Mid-stream resets surface on the RESPONSE — without this the
+        // failure is silent until the stall timeout.
+        res.on("error", (e) => { if (timer) clearTimeout(timer); reject(e); });
+        res.on("aborted", () => { if (timer) clearTimeout(timer); reject(new Error("connection aborted mid-download")); });
         res.pipe(out);
         out.on("finish", () => { if (timer) clearTimeout(timer); out.close((e) => (e ? reject(e) : resolve())); });
         out.on("error", (e) => { if (timer) clearTimeout(timer); reject(e); });
@@ -198,6 +202,10 @@ function streamToFileResumable(url, dest, onProgress, timeoutMs = 10 * 60_000, r
         const out = fs.createWriteStream(dest, append ? { flags: "a" } : {});
         let received = append ? existing : 0;
         res.on("data", (c) => { received += c.length; onProgress(received); arm(req); });
+        // Mid-stream resets surface on the RESPONSE — without this the
+        // failure is silent until the stall timeout.
+        res.on("error", (e) => { if (timer) clearTimeout(timer); reject(e); });
+        res.on("aborted", () => { if (timer) clearTimeout(timer); reject(new Error("connection aborted mid-download")); });
         res.pipe(out);
         out.on("finish", () => { if (timer) clearTimeout(timer); out.close((e) => (e ? reject(e) : resolve())); });
         out.on("error", (e) => { if (timer) clearTimeout(timer); reject(e); });

@@ -94,12 +94,51 @@ export async function writeLocalManifest(manifest: CorpusManifest): Promise<void
   );
 }
 
+/** True for failures worth retrying: transport-level errors (ECONNRESET,
+ *  timeouts, socket hang-ups — routine on GitHub connections from some
+ *  networks) and retryable HTTP statuses. HTTP 4xx (except 429) and
+ *  JSON/schema problems are NOT transient — retrying can't fix them. */
+function isTransientNetError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  const httpStatus = msg.match(/^HTTP (\d{3}) /);
+  if (httpStatus) {
+    const s = Number(httpStatus[1]);
+    return s === 429 || s >= 500;
+  }
+  return true; // non-HTTP failure → transport-level → retryable
+}
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
 /** Fetch the remote manifest from settings.corpusManifestUrl. Uses
  *  node:https directly to match the rest of the codebase's outbound HTTP
  *  style (see lib/bugzilla.ts) and to avoid Next.js fetch-bundling
- *  issues with corporate proxies + self-signed certs. */
+ *  issues with corporate proxies + self-signed certs.
+ *
+ *  RETRIES transient network failures (4 attempts, exponential backoff +
+ *  jitter): connections to github.com get reset intermittently on some
+ *  networks (observed ECONNRESET on the "check for updates" click), and
+ *  the manifest is a sub-kilobyte file — a couple of retries turn a flaky
+ *  route into a reliable check. Persistent failures surface a message
+ *  that points at the internal-mirror override. */
 export async function fetchRemoteManifest(url: string, opts: { timeoutMs?: number } = {}): Promise<CorpusManifest> {
-  const text = await httpGetString(url, opts.timeoutMs ?? 15_000);
+  const attempts = 4;
+  let text = "";
+  for (let i = 0; ; i++) {
+    try {
+      text = await httpGetString(url, opts.timeoutMs ?? 15_000);
+      break;
+    } catch (err) {
+      if (i >= attempts - 1 || !isTransientNetError(err)) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `${msg} (after ${i + 1} attempt${i ? "s" : ""}). If github.com is unstable or blocked ` +
+          `on this network, set the Manifest URL to an internal mirror hosting the same files.`,
+        );
+      }
+      await sleep(Math.min(4_000, 500 * 2 ** i) + Math.floor(Math.random() * 250));
+    }
+  }
   let parsed: CorpusManifest;
   try {
     parsed = JSON.parse(text) as CorpusManifest;
