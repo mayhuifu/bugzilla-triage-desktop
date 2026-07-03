@@ -47,7 +47,7 @@ it (model paraphrase).
 Install it **once**, after the server is up:
 
 ```bash
-# default source = the corpus repo's GitHub release:
+# default source = the NEWEST corpus release (stable releases/latest alias):
 docker compose exec app node scripts/install-corpus.mjs
 
 # behind the Great Firewall / offline → point at an internal mirror hosting the
@@ -56,7 +56,7 @@ docker compose exec app node scripts/install-corpus.mjs
 docker compose exec -e CORPUS_MANIFEST_URL=https://mirror.internal/3gpp-corpus.manifest.json \
     app node scripts/install-corpus.mjs
 
-# replace an installed corpus (e.g. a newer rel17 build):
+# upgrade an installed corpus to the newest release:
 docker compose exec app node scripts/install-corpus.mjs --force
 ```
 
@@ -66,13 +66,29 @@ are a no-op unless `--force`). Restart the app (`docker compose restart app`) if
 it was already running so it reopens the file; the next Spec search / triage on
 any account then uses it.
 
-**Fully offline alternative — mount a prebuilt file** (no network at all):
+**Query embedder (corpora from rel17-v7 on).** rel17-v7+ corpora are embedded
+with `BAAI/bge-m3`; semantic (hybrid) search needs the matching query-side
+model at runtime, which is too large (~590 MB) to bake into the image. The
+installer handles it automatically: after the corpus step it reads the
+manifest's `embeddingModel` and stages the ONNX files to
+`/data/bugzilla-triage-desktop/models/` (persistent volume — survives image
+rebuilds; downloads RESUME if interrupted, so flaky egress is fine). Override
+the download host with `-e HF_ENDPOINT=…` (default `https://hf-mirror.com`),
+or skip with `--skip-embedder` — the app then runs keyword-only retrieval
+until the model appears. Servers that installed rel17-v7 before this step
+existed just re-run the installer (no `--force` needed — the corpus step is
+skipped, the embedder step runs).
+
+**Fully offline alternative — mount prebuilt files** (no network at all):
 
 ```yaml
 # in docker-compose.yml, under the app service:
 volumes:
   - btdata:/data
   - /opt/zilla/corpus.sqlite:/data/bugzilla-triage-desktop/corpus/corpus.sqlite:ro
+  # rel17-v7+: the bge-m3 query embedder, staged on a networked machine via
+  #   EMBED_REPO=Xenova/bge-m3 node scripts/fetch-embed-model.mjs
+  - /opt/zilla/models:/data/bugzilla-triage-desktop/models:ro
 ```
 
 ## Environment reference

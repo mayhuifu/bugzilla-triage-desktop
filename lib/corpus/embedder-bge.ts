@@ -80,17 +80,24 @@ function dtypeFor(cfg: BgeModelConfig): "q8" | "fp16" | "fp32" {
   return env === "fp32" || env === "fp16" || env === "q8" ? env : cfg.defaultDtype;
 }
 
-/** Resolve the bundled-model directory if it has been staged for `repo`.
- *  In the packaged app the Next.js standalone server runs with
- *  cwd = <resources>/app/.next/standalone and electron-builder copies the
- *  model to <cwd>/models/<repo>/. config.json is the first file the
- *  runtime reads, so its presence is the reliable "staged" signal. */
+/** Resolve the staged-model directory for `repo`, checking (in order):
+ *
+ *   1. <cwd>/models/         — bundled by electron-builder (desktop) or
+ *                              baked into the Docker image at build time.
+ *   2. <appData>/models/     — staged by scripts/install-corpus.mjs on a
+ *                              server (persistent /data volume) or by an
+ *                              admin for fully-offline desktops.
+ *
+ *  config.json is the first file the runtime reads, so its presence is the
+ *  reliable "staged" signal. Returns null when unstaged anywhere → the
+ *  caller allows a remote (cached) download instead. */
 function bundledModelRoot(repo: string): string | null {
-  const root = path.join(process.cwd(), "models");
-  const cfg = path.join(root, ...repo.split("/"), "config.json");
-  try {
-    if (fs.existsSync(cfg)) return root;
-  } catch { /* fall through to remote */ }
+  for (const root of [path.join(process.cwd(), "models"), path.join(appDataDir(), "models")]) {
+    const cfg = path.join(root, ...repo.split("/"), "config.json");
+    try {
+      if (fs.existsSync(cfg)) return root;
+    } catch { /* try next root / fall through to remote */ }
+  }
   return null;
 }
 
