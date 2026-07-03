@@ -199,7 +199,10 @@ async function getStats(a: Record<string, unknown>): Promise<ToolResult> {
 async function searchSpecs(a: Record<string, unknown>): Promise<ToolResult> {
   const q = String(a.query || "").trim();
   if (!q) return { summary: "search_specs needs a query." };
-  const hits = await retrieveByText(q, { limit: Math.max(1, Math.min(Number(a.limit) || 4, 10)) });
+  // Clamp raised 10 → 15 with the retriever-v2 port: answer-containment on
+  // the Tele-Eval set measured 82%@5 vs 91.3%@10, so a wider window is
+  // cheap insurance when the agent asks for more context.
+  const hits = await retrieveByText(q, { limit: Math.max(1, Math.min(Number(a.limit) || 4, 15)) });
   if (!hits.length) return { summary: `No spec clauses found for "${q}" (corpus may not be installed).` };
   const body = hits.map(h => `${h.citation} — ${h.title}\n${h.text.slice(0, 600)}`).join("\n\n");
   return { summary: `3GPP clauses for "${q}":\n\n${body}` };

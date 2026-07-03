@@ -1176,11 +1176,15 @@ function spawnAndCapture(cmd: string, cliArgs: string[]): Promise<string> {
 export async function runLlmText(
   system: string,
   user: string,
-  opts: { model?: string; maxTokens?: number; timeoutMs?: number } = {},
+  opts: { model?: string; maxTokens?: number; timeoutMs?: number; temperature?: number } = {},
 ): Promise<string> {
   const s = getEffectiveSettings();
   const maxTokens = opts.maxTokens ?? 1024;
   const timeoutMs = opts.timeoutMs ?? 12_000;
+  // Deterministic tasks (e.g. the corpus listwise reranker) pass 0.
+  // Only forwarded to the API providers — the CLI providers have no
+  // per-call temperature control.
+  const temperature = opts.temperature;
 
   let model = opts.model || s.defaultModel || DEFAULT_MODEL;
   if (s.llmProvider === "claude-cli" && !/^(opus|sonnet|haiku|claude-)/i.test(model)) {
@@ -1201,6 +1205,7 @@ export async function runLlmText(
     const client = new Anthropic({ apiKey: s.anthropicApiKey });
     const resp = await withTimeout(client.messages.create({
       model, max_tokens: maxTokens, system,
+      ...(temperature !== undefined ? { temperature } : {}),
       messages: [{ role: "user", content: user }],
     }));
     const block = resp.content.find((b): b is Anthropic.TextBlock => b.type === "text");
@@ -1211,6 +1216,7 @@ export async function runLlmText(
     const client = new OpenAI({ apiKey: s.anthropicApiKey, baseURL: s.llmBaseUrl });
     const resp = await withTimeout(client.chat.completions.create({
       model, max_tokens: maxTokens,
+      ...(temperature !== undefined ? { temperature } : {}),
       messages: [
         { role: "system", content: system },
         { role: "user", content: user },
