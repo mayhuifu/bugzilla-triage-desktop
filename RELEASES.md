@@ -12,6 +12,40 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.12 — corpus update check discovers new releases
+
+**Tagged:** 2026-07-03
+**Published:** 2026-07-03
+
+### Highlights
+
+- **"Check for update" on the corpus card now actually finds new corpus
+  releases.** The manifest URL used to be pinned per release tag
+  (`…/releases/download/rel17-v6/…manifest.json`), so the update check
+  could only ever re-fetch the release it already knew — a newly published
+  corpus (rel17-v7) was invisible until a desktop release bumped the
+  hard-coded URL. The default now points at a stable alias,
+  `…/releases/latest/download/corpus-latest.manifest.json`, which GitHub's
+  `latest` redirect always resolves to the newest corpus release. Existing
+  installs that kept the old v6 default are migrated automatically;
+  customised URLs (internal mirrors) are untouched. Verified end-to-end:
+  a v6 install discovers rel17-v7, downloads (sha256-verified) and
+  installs it in-app.
+- Pairs with the corpus repo's publish script now uploading
+  `corpus-latest.manifest.json` alongside the versioned manifest on every
+  release (from rel17-v7 onward). Artifact URLs inside the manifest stay
+  versioned — download integrity is unchanged.
+
+### Changes
+
+- `lib/settings.ts`: `DEFAULT_CORPUS_MANIFEST_URL` → the stable
+  `releases/latest` alias; rel17-v6 default added to the legacy
+  auto-migrate set.
+- corpus repo `scripts/04-publish.ts`: uploads the manifest twice
+  (versioned + `corpus-latest.manifest.json`).
+
+---
+
 ## v0.7.11 — retriever v2 + bge-m3 embedder for the rel17-v7 corpus
 
 **Tagged:** 2026-07-03
