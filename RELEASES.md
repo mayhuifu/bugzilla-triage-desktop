@@ -12,6 +12,56 @@ Single source of truth for what shipped in each tagged release. New entries land
 
 ---
 
+## v0.7.17 — AI rerank ~3× faster (4s → ~1.2s)
+
+**Tagged:** 2026-07-04
+**Published:** 2026-07-04
+
+### Highlights
+
+- **The "Use AI to re-rank" search now returns in ~1.2 s instead of ~4 s**
+  (hybrid search itself was already instant at ~0.07 s). Two hidden costs
+  were doing the damage, both fixed:
+  - An **N+1 query** while assembling the rerank candidate pool — the
+    per-candidate "best matching passage" lookup re-ran a broad full-text
+    query once for *each* of ~113 candidates (~1.5 s total). Now a single
+    batched query (~65 ms).
+  - An **oversized model prompt** — all ~113 candidates × long snippets
+    (~40k tokens) with a full re-ranking of every one. Now re-ranks the
+    top 64 with shorter snippets and asks only for the best few (~15k
+    tokens), matching the DeepSeek/API latency floor.
+- **A stalled re-rank no longer freezes search for up to 2 minutes.** The
+  fallback deadline for API providers (DeepSeek/Anthropic/OpenAI-compatible)
+  dropped from 120 s to 25 s — past that it silently keeps the normal
+  hybrid order. CLI providers (claude/codex), which legitimately take
+  60-100 s on a big prompt, keep the long deadline.
+- **Search quality is unchanged** — verified on the internal 13-query
+  UL-coexistence retrieval test (same 7/13 pass rate as before the speedup;
+  the pool trim dropped no expected clauses).
+
+### Changes
+
+- `lib/corpus/retriever-v2.ts`: `bestChunkFor` (per-candidate) → batched
+  `bestChunksFor` (one `chunk_fts MATCH … AND clause_id IN (…)` scan).
+- `lib/corpus/retriever.ts`: rerank only the fused-rank-first
+  `V2_RERANK_POOL` (64) candidates; snippet cap 1200→700; pass `topK`.
+  New `RERANK_POOL` / `RERANK_SNIPPET_CHARS` env knobs for ops tuning.
+- `lib/corpus/reranker-llm.ts`: `buildPrompt` gains top-K mode
+  (`MAX_OUT_TOKENS` 2048→512); provider-aware rerank timeout
+  (`TIMEOUT_MS_API` 25 s / `TIMEOUT_MS_CLI` 120 s).
+
+### Notes
+
+- Latency floor: a 6-config grid (pool 24–64, snippet 0–700 chars) showed
+  the re-rank call is now bounded by the LLM provider's API latency
+  (~1.3 s ± jitter on DeepSeek), not our prompt size — further trimming
+  yields nothing. Going sub-second would require an on-device re-ranker or
+  progressive rendering (return hybrid instantly, refine when the re-rank
+  lands); neither shipped here.
+- Corpus/schema unchanged (still rel17-v7). No re-download required.
+
+---
+
 ## v0.7.16 — embedder download is a visible stage of the corpus install
 
 **Tagged:** 2026-07-03
