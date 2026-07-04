@@ -465,10 +465,19 @@ function materializeIds(
   return mapped;
 }
 
-/** Per-candidate snippet cap for the union-pool LLM rerank — ~300 tokens
- *  (the handoff's budget): for long clauses the head is boilerplate, so the
- *  best-matching chunk window (chunk_fts) is used when available. */
-const V2_RERANK_SNIPPET_CHARS = 1200;
+/** Per-candidate snippet cap for the union-pool LLM rerank. Trimmed
+ *  1200→700 chars (~175 tokens): the best-matching chunk's opening carries
+ *  the relevance signal, and prefill (input tokens) is the dominant rerank
+ *  latency — 700 chars over a capped pool keeps the whole prompt well under
+ *  ~20k tokens (≈1s prefill) vs ~40k before (~2.9s). */
+const V2_RERANK_SNIPPET_CHARS = Number(process.env.RERANK_SNIPPET_CHARS ?? 700);
+/** Working-pool cap: the LLM reranks at most this many union candidates
+ *  (fused-rank-first), not all ~113. The reranker's job is to reorder the
+ *  promising head + rescue list-specific hits fusion under-ranked; the deep
+ *  tail is filled from the fused order afterward, so ranking it is wasted
+ *  prefill. 64 keeps recall (our hard eval targets land at fused ranks
+ *  ≤~30) while ~halving input tokens. */
+const V2_RERANK_POOL = Number(process.env.RERANK_POOL ?? 64);
 
 /** retriever-v2 retrieval (rel17-v7+). Test-spec demotion is NOT layered
  *  on top here — the engine's validated scope priors already down-weight
@@ -509,7 +518,10 @@ async function v2Retrieve(
     const effLabel: "v2-fts" | "v2-hybrid" = qEmb ? pathLabel : "v2-fts";
 
     if (rerank === "llm" && hasConfiguredLlmProvider()) {
-      const { fused, union } = engine.candidates(queryText, qEmb);
+      const { fused, union: fullUnion } = engine.candidates(queryText, qEmb);
+      // Rerank only the fused-rank-first head — the tail is filled from the
+      // fused order after, so paying prefill to rank it is wasted.
+      const union = fullUnion.slice(0, V2_RERANK_POOL);
       if (union.length > 1) {
         const rowById = new Map(fetchClauseRows(db, union.map(u => u.id)).map(r => [r.id, r]));
         const items = union.map(u => {
@@ -520,7 +532,7 @@ async function v2Retrieve(
           const body = (u.bestChunk ?? r?.text ?? "").slice(0, V2_RERANK_SNIPPET_CHARS);
           return { id: u.id, text: `${head}\n${body}` };
         });
-        const ordered = await rerankUnionPool(rerankQuery || queryText, items);
+        const ordered = await rerankUnionPool(rerankQuery || queryText, items, limit);
         if (ordered.length > 0) {
           // LLM order wins; fused-only leftovers (ids the parse dropped)
           // append as the fallback tail. Then citation-pull, then slice.

@@ -54,13 +54,21 @@ const SYSTEM =
   "CRITICAL OUTPUT RULE: reply with EXACTLY ONE JSON array of integers and nothing else — " +
   "no prose, no explanation, no markdown code fences.";
 
-/** Build the listwise prompt. Passages are pre-formatted (title-prefixed). */
-function buildPrompt(query: string, passages: string[]): string {
+/** Build the listwise prompt. Passages are pre-formatted (title-prefixed).
+ *  `topK` asks for only the K best indices instead of a full permutation:
+ *  the caller only keeps a top slice and fills the tail from the fused
+ *  order, so ranking all N is wasted decode (the dominant output cost on a
+ *  large pool). parseOrder() appends any unlisted indices, so a top-K reply
+ *  is still a valid full permutation downstream. */
+function buildPrompt(query: string, passages: string[], topK?: number): string {
   const list = passages.map((p, i) => `[${i}] ${p}`).join("\n\n");
-  return `Query:\n${query}\n\nCandidate clauses:\n${list}\n\n` +
-    `Rank ALL ${passages.length} candidates from most to least relevant to the query. ` +
+  const k = topK && topK < passages.length ? topK : passages.length;
+  const ask = k < passages.length
+    ? `Identify the ${k} candidates most relevant to the query and output them best-first. `
+    : `Rank ALL ${passages.length} candidates from most to least relevant to the query. `;
+  return `Query:\n${query}\n\nCandidate clauses:\n${list}\n\n` + ask +
     `Output ONLY a JSON array of the candidate indices (0-based) in ranked order, ` +
-    `best first, every index exactly once. Example: [3,0,7,1].`;
+    `best first. Example: [3,0,7,1].`;
 }
 
 /** Parse the model's index array defensively: keep valid in-range unique
@@ -148,20 +156,31 @@ export interface RerankCandidate {
   text: string;
 }
 
-/** Hard cap on the pool a single listwise call sees. 3 lists × 50 = 150
- *  max by construction; the cap only guards future config drift. ~150
- *  candidates × ~300 tokens ≈ 45k prompt tokens — inside every provider
- *  we route to (DeepSeek 64k, Claude/GPT ≥128k). */
+/** Hard cap on the pool a single listwise call sees. The caller now trims
+ *  the union to a smaller working pool (fused-rank-first) BEFORE calling —
+ *  reranking the deep tail is wasted prefill (the dominant latency on a
+ *  large pool: ~2.9 s to read 48k tokens on DeepSeek). This stays as a
+ *  hard ceiling against config drift. */
 const MAX_POOL = 150;
-// An index array of 150 entries is ~600 output tokens; 2048 leaves margin
-// for models that space/pretty-print. Output is best-first, so even a
-// truncated reply ranks the head correctly (parseOrder appends the rest).
-const MAX_OUT_TOKENS = 2048;
-// One big listwise call is slower than the 30-candidate legacy call —
-// especially on the CLI providers (claude/codex spawn a subprocess and
-// routinely take 60-100s on a ~45k-token prompt). Generous but bounded;
-// API providers (DeepSeek/Anthropic/OpenAI-compatible) finish well under.
-const TIMEOUT_MS = 120_000;
+// Output is best-first and (with topK) short — a top-20 reply is ~80
+// tokens. 512 leaves margin for models that pretty-print or return the
+// full list anyway; parseOrder appends whatever's missing.
+const MAX_OUT_TOKENS = 512;
+// Rerank timeout is the fallback deadline: on timeout the caller keeps the
+// (already-computed) fused order, so this bounds the WORST-case added latency,
+// not the typical case. Provider-aware because the floors differ by 5-10×:
+//   - API providers (DeepSeek/Anthropic/OpenAI-compatible) run ~1-3 s median;
+//     a stall past ~20 s is a dead call, so fail fast to fused order rather
+//     than freeze the search. (Was a flat 120 s — a transient API hiccup
+//     could hang the UI for two minutes.)
+//   - CLI providers (claude/codex) spawn a subprocess and legitimately take
+//     60-100 s on a big listwise prompt, so they keep the long deadline.
+const TIMEOUT_MS_API = 25_000;
+const TIMEOUT_MS_CLI = 120_000;
+function rerankTimeoutMs(): number {
+  const p = getEffectiveSettings().llmProvider;
+  return p === "claude-cli" || p === "codex-cli" ? TIMEOUT_MS_CLI : TIMEOUT_MS_API;
+}
 
 /** Rank the union candidate pool. Returns the ids best-first (a permutation
  *  of the input ids), or [] on ANY failure — the caller must treat [] as
@@ -169,13 +188,14 @@ const TIMEOUT_MS = 120_000;
 export async function rerankUnionPool(
   query: string,
   candidates: RerankCandidate[],
+  topK?: number,
 ): Promise<string[]> {
   if (candidates.length === 0) return [];
   if (!hasConfiguredLlmProvider()) return [];
   const pool = candidates.slice(0, MAX_POOL);
   try {
-    const raw = await runLlmText(SYSTEM, buildPrompt(query, pool.map(c => c.text)), {
-      maxTokens: MAX_OUT_TOKENS, timeoutMs: TIMEOUT_MS, temperature: 0,
+    const raw = await runLlmText(SYSTEM, buildPrompt(query, pool.map(c => c.text), topK), {
+      maxTokens: MAX_OUT_TOKENS, timeoutMs: rerankTimeoutMs(), temperature: 0,
     });
     const idLookup = new Map(pool.map((c, i) => [c.id, i]));
     const order = parseOrder(raw, pool.length, idLookup);

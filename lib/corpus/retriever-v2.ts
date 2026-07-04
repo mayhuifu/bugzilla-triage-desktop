@@ -255,15 +255,6 @@ export function createRetrieverV2(db: Database.Database, opts: RetrieverV2Opts =
     SELECT clause_id AS id FROM chunk_fts
     WHERE chunk_fts MATCH ? ORDER BY bm25(chunk_fts) LIMIT ?
   `) : null;
-  // Best-matching window for ONE clause — feeds the LLM reranker's
-  // per-candidate snippet. clause_id is an UNINDEXED fts5 column, so the
-  // equality is a post-filter over the MATCH result set (fine at our
-  // scale: one narrow MATCH per union candidate, ~1 ms each).
-  const bestChunkSql = hasChunkFts ? db.prepare(`
-    SELECT text FROM chunk_fts
-    WHERE chunk_fts MATCH ? AND clause_id = ?
-    ORDER BY bm25(chunk_fts) LIMIT 1
-  `) : null;
 
   const TIER_CAP = Math.max(15, Math.floor(CAND / 2));
   function ladderCandidates(query: string, sql: Database.Statement, dedupeChunks = false) {
@@ -419,17 +410,32 @@ export function createRetrieverV2(db: Database.Database, opts: RetrieverV2Opts =
     return out.slice(0, 50);
   }
 
-  /** Best chunk window for one clause against the query's broad OR
-   *  expression. Null when nothing matched (definitional clause, or a
-   *  purely-semantic candidate). */
-  function bestChunkFor(id: string, orFloorMatch: string): string | null {
-    if (!bestChunkSql) return null;
+  /** Best chunk window for MANY clauses in ONE FTS scan. The per-clause
+   *  variant re-ran the broad OR MATCH once per candidate (N+1: ~113
+   *  executions ≈ 1.5 s on a rerank pool) because `clause_id` is an
+   *  UNINDEXED fts5 column, so `... MATCH ? AND clause_id = ?` executes
+   *  the full MATCH then post-filters. Batching to a single
+   *  `MATCH ? AND clause_id IN (…)` runs the MATCH ONCE; rows arrive
+   *  best-bm25 first, so the first row seen per clause_id is its best
+   *  chunk. Returns a map id → text (absent = no lexical chunk match;
+   *  the caller falls back to the clause head text). */
+  function bestChunksFor(ids: string[], orFloorMatch: string): Map<string, string> {
+    const out = new Map<string, string>();
+    if (!hasChunkFts || ids.length === 0) return out;
+    const placeholders = ids.map(() => "?").join(",");
     try {
-      const t = bestChunkSql.get(orFloorMatch, id) as { text?: string } | undefined;
-      return t?.text ?? null;
+      const stmt = db.prepare(
+        `SELECT clause_id AS id, text FROM chunk_fts
+         WHERE chunk_fts MATCH ? AND clause_id IN (${placeholders})
+         ORDER BY bm25(chunk_fts)`,
+      );
+      for (const r of stmt.all(orFloorMatch, ...ids) as Array<{ id: string; text: string }>) {
+        if (!out.has(r.id)) out.set(r.id, r.text);   // first per clause = best bm25
+      }
     } catch {
-      return null;
+      // MATCH parse failure / param cap — snippets fall back to clause text.
     }
+    return out;
   }
 
   function gatherLists(query: string, qEmb: Buffer | null) {
@@ -461,9 +467,10 @@ export function createRetrieverV2(db: Database.Database, opts: RetrieverV2Opts =
         for (const id of list) { if (!seen.has(id)) { seen.add(id); unionIds.push(id); } }
       }
       const orFloor = buildBm25Match(query);
+      const bestChunks = bestChunksFor(unionIds, orFloor);   // ONE FTS scan
       const union: V2Candidate[] = unionIds.map(id => ({
         id,
-        bestChunk: bestChunkFor(id, orFloor),
+        bestChunk: bestChunks.get(id) ?? null,
         fusedRank: fusedRankById.get(id) ?? null,
       }));
       return { fused, union };
